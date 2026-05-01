@@ -41,6 +41,7 @@ streamlit run app.py
 L'app s'ouvre par défaut sur http://localhost:8501
 
 ## Structure du projet
+```bash
 dashboard-cme/
 ├── app.py                              # Application Streamlit principale
 ├── requirements.txt                    # Dépendances Python
@@ -48,7 +49,13 @@ dashboard-cme/
 ├── 251113_Data.xlsx                    # Données de pureté (saisies)
 ├── .gitignore                          # Fichiers ignorés par Git
 └── README.md                           # Ce fichier
+```
+## TODO / Améliorations prévues
 
+- [ ] Migration Excel → CSV : alléger les chargements et résoudre les warnings de sérialisation Arrow (colonne `outlier` au type hétérogène).
+- [ ] Page d'accueil pédagogique sur les limites d'interprétation WBE.
+- [ ] Ajout de l'authentification par STEP (streamlit-authenticator).
+- [ ] Déploiement sur Streamlit Community Cloud.
 ## Méthodologie
 
 - **`<LOD`** : valeurs sous la limite de détection → remplacées par 0 ng/L
