@@ -139,6 +139,19 @@ CITY_COORDS = {
     "city 5": (47.5596, 7.5886),
 }
 
+# ----------------------
+# CLASSIFICATION LINGUISTIQUE DES VILLES (pour cadrage automatique de la carte)
+# ----------------------
+# Clés normalisées (minuscules sans accents) — passées par _norm()
+ROMANDE_CITIES = {
+    "geneve", "geneva", "lausanne", "morges", "neuchatel", "vevey",
+    "yverdon", "yverdon les bains", "payerne", "bulle", "sion", "sitten",
+    "nyon", "renens", "ecublens", "vernier", "meyrin", "carouge", "lancy",
+    "onex", "bienne", "biel", "fribourg", "freiburg", "montreux",
+}
+# Villes "frontière" : leur présence ne déclenche pas le cadrage Suisse entière.
+# Berne est officiellement bilingue et géographiquement à la limite romande.
+NEUTRAL_CITIES = {"bern", "berne"}
 
 def build_city_color_map(df: pd.DataFrame, color_palette: list) -> dict:
     """
@@ -478,6 +491,49 @@ st.markdown("""
     border: 2px solid #333;
     display: inline-block;
 }
+
+/* Légende population superposée sur la carte */
+.map-wrapper {
+    position: relative;
+}
+.map-pop-legend {
+    position: absolute;
+    bottom: 30px;
+    right: -10px;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: #333;
+    z-index: 1000;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    pointer-events: none;
+}
+.map-pop-legend-title {
+    font-weight: 600;
+    margin-bottom: 6px;
+    text-align: center;
+}
+.map-pop-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 3px 0;
+}
+.map-pop-circle {
+    display: inline-block;
+    border-radius: 50%;
+    background: rgba(120, 120, 120, 0.4);
+    border: 1.5px solid #555;
+    flex-shrink: 0;
+}
+/* Tailles cohérentes avec SIZE_MIN_PX=14 / SIZE_MAX_PX=52, courbe √population */
+.map-pop-circle.s-500k { width: 52px; height: 52px; }
+.map-pop-circle.s-250k { width: 41px; height: 41px; }
+.map-pop-circle.s-100k { width: 31px; height: 31px; }
+.map-pop-circle.s-50k  { width: 24px; height: 24px; }
+.map-pop-circle.s-10k  { width: 14px; height: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -575,8 +631,13 @@ def load_wbe(path: str) -> pd.DataFrame:
         df["date"] = pd.to_datetime("1899-12-30") + pd.to_timedelta(df["date"], unit="D")
     else:
         df["date"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True)
-    return df.dropna(subset=["date"]).copy()
 
+    # Normaliser les colonnes flag (mélange TRUE/VRAI/Yes/No/FAUX dans Excel)
+    # → force en string pour éviter le crash Arrow lors de st.dataframe
+    for c in ["outlier", "inf_lod", "inf_loq"]:
+        if c in df.columns:
+            df[c] = df[c].astype(str).str.strip()
+    return df.dropna(subset=["date"]).copy()
 
 @st.cache_data
 def load_market(path: str) -> pd.DataFrame:
@@ -918,326 +979,97 @@ def _fetch_cantons_geojson():
         pass
     return None
 
-
 def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
                                          value_col: str = "y",
                                          title: str = "Carte — charges médianes",
                                          units: str = "mg/j/1000 hab.",
                                          key: Optional[str] = None,
                                          basemap_style: str = "carto-positron",
-                                         zoom: float = 6.8,
+                                         zoom: float = 7.2,
                                          height: int = 520) -> None:
     """
-    Affiche une carte avec Folium (si disponible) ou Scattergeo (fallback).
-    - Taille des cercles = proportionnelle à la population
-    - Couleur des cercles = proportionnelle à la concentration médiane
-    - Frontières cantonales suisses détaillées (avec Folium)
+    Carte des villes avec Plotly Maplibre (rapide, sans st_folium).
+    - Taille des cercles ∝ population (racine carrée pour perception aire)
+    - Couleur des cercles = concentration médiane
+    - Frontières cantonales suisses superposées (GeoJSON)
     """
     city_df = build_city_bubble_df(df_sub, value_col=value_col)
 
     if city_df.empty:
         if "ville" in df_sub.columns:
-            missing_cities = df_sub["ville"].dropna().unique().tolist()
-            st.warning(f"⚠️ Pas de coordonnées géographiques pour les villes : {', '.join(missing_cities)}")
-            st.caption(
-                "💡 Ajoutez ces villes au dictionnaire CITY_COORDS ou incluez des colonnes lat/lon dans vos données.")
+            missing = df_sub["ville"].dropna().unique().tolist()
+            st.warning(f"⚠️ Pas de coordonnées géographiques pour : {', '.join(missing)}")
         else:
             st.info("Pas assez d'informations géographiques pour afficher la carte.")
         return
 
-    # Vérifier que les valeurs médianes sont valides
     city_df["value_median"] = pd.to_numeric(city_df["value_median"], errors="coerce")
     city_df = city_df.dropna(subset=["value_median"])
-
     if city_df.empty:
         st.warning("⚠️ Aucune valeur médiane valide pour afficher la carte.")
         return
 
-    # Centre automatique
-    center_lat = float(city_df["lat"].mean())
-    center_lon = float(city_df["lon"].mean())
-
-    # Plage de valeurs pour l'échelle de couleur
+    # Échelle de couleur (concentration)
     val_min = float(city_df["value_median"].min())
     val_max = float(city_df["value_median"].max())
-
-    # CORRECTION BUG: Si val_min == val_max, l'échelle de couleur est invalide
     if val_min == val_max:
         margin = max(abs(val_min) * 0.1, 1.0)
-        val_min = val_min - margin
-        val_max = val_max + margin
+        val_min -= margin
+        val_max += margin
 
-    # Calcul des tailles de markers (basé sur population, normalisé)
-    pop_vals = pd.to_numeric(city_df["pop_median"], errors="coerce").fillna(50000)
-    max_pop = float(pop_vals.max()) if not pop_vals.empty else 50000.0
-    min_pop = float(pop_vals.min()) if not pop_vals.empty else 10000.0
+    # Taille des cercles ∝ √population, sur une échelle ABSOLUE 10k → 500k habitants
+    # (cohérence visuelle d'une vue à l'autre : Bulle a toujours la même taille
+    #  qu'on la regarde seule ou avec Genève)
+    POP_MIN_REF = 10_000
+    POP_MAX_REF = 500_000
+    SIZE_MIN_PX = 14
+    SIZE_MAX_PX = 52
 
-    # --- Essayer d'utiliser Folium (meilleure qualité) ---
-    try:
-        import folium
-        from streamlit_folium import st_folium
-        from branca.colormap import LinearColormap
+    pop_clipped = pd.to_numeric(city_df["pop_median"], errors="coerce").fillna(POP_MIN_REF)
+    pop_clipped = pop_clipped.clip(lower=POP_MIN_REF, upper=POP_MAX_REF)
+    normalized = (pop_clipped - POP_MIN_REF) / (POP_MAX_REF - POP_MIN_REF)
+    city_df["marker_size"] = SIZE_MIN_PX + (normalized ** 0.5) * (SIZE_MAX_PX - SIZE_MIN_PX)
 
-        # Créer la carte Folium - centrée sur la Suisse
-        m = folium.Map(
-            location=[46.8, 8.2],  # Centre de la Suisse
-            zoom_start=8,
-            tiles=None,
-            min_zoom=7,
-            max_bounds=True
-        )
+    # Couches custom : frontières cantonales
+    cantons_geojson = _fetch_cantons_geojson()
+    map_layers = []
+    if cantons_geojson:
+        map_layers.append({
+            "sourcetype": "geojson",
+            "source": cantons_geojson,
+            "type": "line",
+            "color": "rgba(85, 85, 85, 0.55)",
+            "line": {"width": 1.0},
+            "below": "traces",
+        })
 
-        # Limiter les bounds à la Suisse
-        m.fit_bounds([[45.8, 5.9], [47.85, 10.55]])
+    # Auto-zoom selon la composition des villes affichées :
+    # - 1 seule ville → zoom serré
+    # - toutes romandes ou neutres (Bern) → cadrage Romandie élargie
+    # - au moins une alémanique → cadrage Suisse entière
+    lats = city_df["lat"].tolist()
+    lons = city_df["lon"].tolist()
 
-        # Ajouter les tuiles CartoDB Positron (propre et lisible)
-        folium.TileLayer(
-            tiles='https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-            attr='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-            name='CartoDB Positron',
-            max_zoom=19
-        ).add_to(m)
-
-        # Charger le GeoJSON des cantons suisses (CACHÉ)
-        try:
-            cantons_geojson = _fetch_cantons_geojson()
-            if cantons_geojson:
-
-                # Ajouter les frontières des cantons
-                folium.GeoJson(
-                    cantons_geojson,
-                    name="Cantons",
-                    style_function=lambda x: {
-                        'fillColor': 'transparent',
-                        'color': '#555555',
-                        'weight': 1.5,
-                        'fillOpacity': 0
-                    }
-                ).add_to(m)
-        except Exception:
-            # Si le GeoJSON ne charge pas, on continue sans les cantons
-            pass
-
-        # Créer l'échelle de couleur
-        colormap = LinearColormap(
-            colors=['#F7E425', '#F58C46', '#CB4679', '#8707A6', '#41049D'],
-            vmin=val_min,
-            vmax=val_max,
-            caption=f'Charge ({units})'
-        )
-        colormap.add_to(m)
-
-        # Fonction pour calculer la taille du cercle (en mètres pour Folium)
-        def get_radius(pop):
-            # Normaliser entre 3000 et 18000 mètres pour bien distinguer
-            # les différences de population au zoom Suisse
-            if max_pop > min_pop:
-                normalized = (pop - min_pop) / (max_pop - min_pop)
-            else:
-                normalized = 0.5
-            # Racine carrée pour une meilleure perception visuelle (aire ∝ pop)
-            return 3000 + (normalized ** 0.5) * 15000
-
-        # Ajouter les cercles pour chaque ville
-        for _, row in city_df.iterrows():
-            # Calculer la couleur basée sur la valeur
-            color = colormap(row["value_median"])
-
-
-            # Cercle coloré
-            folium.Circle(
-                location=[row["lat"], row["lon"]],
-                radius=get_radius(row["pop_median"]),
-                color=color,
-                weight=1,
-                fill=True,
-                fillColor=color,
-                fillOpacity=0.85,
-                popup=folium.Popup(
-                    f"<b>{row['ville']}</b><br>"
-                    f"Charge: {row['value_median']:.1f} {units}<br>"
-                    f"Population: {row['pop_median']:,.0f}",
-                    max_width=200
-                ),
-                tooltip=f"{row['ville']}: {row['value_median']:.1f}"
-            ).add_to(m)
-
-            # Label de la ville
-            #folium.Marker(
-                #location=[row["lat"] - 0.06, row["lon"]],
-                #icon=folium.DivIcon(
-                    #html=f'<div style="font-size: 10px; font-weight: bold; color: #333; text-align: center; white-space: nowrap;">{row["ville"]}</div>',
-                    #icon_size=(100, 20),
-                    #icon_anchor=(50, 10)
-                #)
-            #).add_to(m)
-
-        # --- Légende de population (taille des cercles) ---
-        def format_pop(n):
-            """Formate les nombres de population"""
-            if n >= 1_000_000:
-                return f"{n / 1_000_000:.1f}M"
-            elif n >= 1_000:
-                return f"{int(n):,}".replace(",", " ")
-            else:
-                return str(int(n))
-
-        # Générer des chiffres ronds "agréables" pour la légende
-        def generate_nice_levels(min_val, max_val, n_levels=5):
-            """Génère des niveaux avec des chiffres ronds (10000, 50000, 100000, etc.)"""
-            if max_val <= min_val:
-                return [int(max_val)]
-
-            # Déterminer l'ordre de grandeur
-            range_val = max_val - min_val
-            magnitude = 10 ** int(np.floor(np.log10(range_val)))
-
-            # Choisir un pas "joli" (1, 2, 5, 10, 20, 50, 100...)
-            raw_step = range_val / (n_levels - 1)
-            nice_steps = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-
-            best_step = magnitude
-            for s in nice_steps:
-                candidate = s * (magnitude / 10)
-                if candidate >= raw_step * 0.5:
-                    best_step = candidate
-                    break
-
-            # Arrondir le min vers le bas au multiple de best_step
-            nice_min = int(np.floor(min_val / best_step) * best_step)
-            if nice_min < min_val * 0.5:
-                nice_min = int(min_val)
-
-            # Générer les niveaux
-            levels = []
-            current = nice_min
-            while current <= max_val * 1.1 and len(levels) < n_levels + 2:
-                if current >= min_val * 0.9:
-                    levels.append(int(current))
-                current += best_step
-
-            # S'assurer d'avoir le max
-            if levels and levels[-1] < max_val:
-                # Arrondir le max
-                nice_max = int(np.ceil(max_val / best_step) * best_step)
-                if nice_max not in levels:
-                    levels.append(nice_max)
-
-            # Garder max 5 niveaux bien espacés
-            if len(levels) > 5:
-                step = len(levels) // 4
-                levels = [levels[0], levels[step], levels[2 * step], levels[3 * step], levels[-1]]
-
-            # Supprimer doublons et trier (décroissant pour l'affichage)
-            levels = sorted(list(set(levels)), reverse=True)
-
-            return levels[:5]
-
-        pop_levels = generate_nice_levels(min_pop, max_pop, n_levels=5)
-
-        # Calculer les tailles de cercles correspondantes (en pixels pour l'affichage)
-        def pop_to_legend_size(pop):
-            """Convertit population en taille de cercle pour la légende (pixels)"""
-            if max_pop > min_pop:
-                normalized = (pop - min_pop) / (max_pop - min_pop)
-                normalized = max(0, min(1, normalized))
-            else:
-                normalized = 0.5
-            # Racine carrée cohérente avec get_radius
-            return 8 + (normalized ** 0.5) * 38  # Entre 8 et 46 pixels
-
-        # Taille max pour l'alignement
-        max_circle_size = pop_to_legend_size(max(pop_levels))
-
-        # Créer le HTML de la légende - cercles alignés par le BAS
-        legend_items_html = ""
-        for pop in pop_levels:  # Déjà trié décroissant
-            size = pop_to_legend_size(pop)
-            # Padding en haut pour pousser le cercle vers le bas
-            padding_top = max_circle_size - size
-
-            legend_items_html += f'''
-                <div style="display: flex; align-items: flex-end; height: {max_circle_size + 4}px; margin-bottom: 0px;">
-                    <div style="
-                        width: {max_circle_size}px;
-                        height: {max_circle_size}px;
-                        display: flex;
-                        flex-direction: column;
-                        justify-content: flex-end;
-                        align-items: center;
-                    ">
-                        <div style="
-                            width: {size}px; 
-                            height: {size}px; 
-                            border-radius: 50%; 
-                            border: 1.5px solid #666;
-                            background: rgba(180,180,180,0.2);
-                            flex-shrink: 0;
-                        "></div>
-                    </div>
-                    <span style="font-size: 11px; color: #333; margin-left: 6px; padding-bottom: {size / 2 - 6}px;">{format_pop(pop)}</span>
-                </div>
-            '''
-
-        population_legend_html = f'''
-            <div style="
-                position: absolute;
-                bottom: 30px;
-                left: 10px;
-                background: white;
-                padding: 8px 12px 12px 12px;
-                border-radius: 5px;
-                box-shadow: 0 1px 5px rgba(0,0,0,0.2);
-                z-index: 1000;
-                font-family: Arial, sans-serif;
-            ">
-                <div style="font-weight: bold; font-size: 11px; margin-bottom: 4px; color: #333;">
-                    Population [hab.]
-                </div>
-                {legend_items_html}
-            </div>
-        '''
-
-        # Ajouter la légende à la carte
-        m.get_root().html.add_child(folium.Element(population_legend_html))
-
-        # Afficher avec streamlit-folium
-        st.markdown(f"**{title}**")
-        st_folium(m, width=None, height=height, key=key)
-        return
-
-    except ImportError:
-        # Folium non disponible, utiliser Scattergeo comme fallback
-        pass
-
-    # --- Fallback: Scattergeo (si Folium non disponible) ---
-
-    # Normaliser les tailles entre 12 et 55 pixels (racine carrée pour perception aire)
-    size_min_px, size_max_px = 12, 55
-    if max_pop > min_pop:
-        normalized = (pop_vals - min_pop) / (max_pop - min_pop)
-        city_df["marker_size"] = size_min_px + (normalized ** 0.5) * (size_max_px - size_min_px)
+    if len(city_df) == 1:
+        center_lat = lats[0]
+        center_lon = lons[0]
+        auto_zoom = 9.0
     else:
-        city_df["marker_size"] = (size_min_px + size_max_px) / 2
+        villes_norm = {_norm(v) for v in city_df["ville"]}
+        only_romande_or_neutral = villes_norm.issubset(ROMANDE_CITIES | NEUTRAL_CITIES)
 
-    fig = go.Figure()
+        if only_romande_or_neutral:
+            # Cadrage Romandie élargie (Jura au nord + Berne à l'est visibles)
+            center_lat = 46.85
+            center_lon = 6.8
+            auto_zoom = 7.1
+        else:
+            # Au moins une ville alémanique → cadrage Suisse entière
+            center_lat = 46.8
+            center_lon = 8.2
+            auto_zoom = 6.2
 
-    # --- 1) Bordures noires ---
-    fig.add_trace(go.Scattergeo(
-        lat=city_df["lat"].tolist(),
-        lon=city_df["lon"].tolist(),
-        mode="markers",
-        marker=dict(
-            size=(city_df["marker_size"] + 4).tolist(),
-            color="black",
-            opacity=0.85,
-        ),
-        hoverinfo="skip",
-        showlegend=False,
-    ))
-
-    # --- 2) Bulles principales colorées ---
-    fig.add_trace(go.Scattergeo(
+    fig = go.Figure(go.Scattermapbox(
         lat=city_df["lat"].tolist(),
         lon=city_df["lon"].tolist(),
         mode="markers+text",
@@ -1247,66 +1079,61 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             colorscale=CONCENTRATION_COLORSCALE,
             cmin=val_min,
             cmax=val_max,
-            opacity=0.92,
-            line=dict(width=0),
+            opacity=0.88,
             colorbar=dict(
                 title=dict(text=f"Charge<br>({units})", font=dict(size=11)),
-                thickness=15,
-                len=0.6,
+                thickness=14,
+                len=0.45,  # raccourcie (avant : 0.65)
                 x=1.02,
+                y=0.78,  # ancrée vers le haut de la carte
+                yanchor="middle",
                 tickfont=dict(size=10),
             ),
         ),
         text=city_df["ville"].tolist(),
-        textposition="bottom center",
-        textfont=dict(size=10, color="#333"),
+        textposition="bottom right",
+        textfont=dict(size=11, color="#1a1a1a"),
+        customdata=city_df[["pop_median", "n_points"]].values,
         hovertemplate=(
             "<b>%{text}</b><br>"
-            f"Charge (médiane) : %{{marker.color:.1f}} {units}<br>"
-            "Population : %{customdata:,.0f}<br>"
+            f"Charge médiane : %{{marker.color:.1f}} {units}<br>"
+            "Population : %{customdata[0]:,.0f} hab.<br>"
+            "Points : %{customdata[1]}"
             "<extra></extra>"
         ),
-        customdata=city_df["pop_median"].tolist(),
         showlegend=False,
     ))
 
     fig.update_layout(
         title=dict(text=title, font=dict(size=14)),
         height=height,
-        margin=dict(l=0, r=60, t=40, b=0),
-        geo=dict(
-            center=dict(lat=46.8, lon=8.2),  # Centre de la Suisse
-            lonaxis=dict(range=[5.8, 10.6]),
-            lataxis=dict(range=[45.8, 47.85]),
-            projection_type="mercator",
-            resolution=50,
-            showland=True,
-            landcolor="rgb(250, 250, 248)",
-            showcountries=True,
-            countrycolor="rgb(80, 80, 80)",
-            countrywidth=1.5,
-            showsubunits=True,
-            subunitcolor="rgb(150, 150, 150)",
-            subunitwidth=0.8,
-            showcoastlines=True,
-            coastlinecolor="rgb(100, 100, 100)",
-            coastlinewidth=1,
-            showlakes=True,
-            lakecolor="rgb(180, 210, 240)",
-            showrivers=True,
-            rivercolor="rgb(180, 210, 240)",
-            riverwidth=0.8,
-            showframe=True,
-            framecolor="rgb(200, 200, 200)",
-            framewidth=1,
-            showocean=True,
-            oceancolor="rgb(210, 230, 250)",
+        margin=dict(l=0, r=10, t=40, b=0),
+        mapbox=dict(
+            style=basemap_style,
+            center=dict(lat=center_lat, lon=center_lon),
+            zoom=auto_zoom,
+            layers=map_layers,
         ),
     )
 
-    st.plotly_chart(fig, width='stretch', key=key)
+    # Wrapper relatif + carte, pour permettre le positionnement absolu de la légende
+    st.markdown('<div class="map-wrapper">', unsafe_allow_html=True)
+    st.plotly_chart(fig, width="stretch", key=key)
 
-
+    # Légende des tailles de population, superposée en bas à droite
+    # (échelle absolue 10k → 500k, indépendante de la sélection courante)
+    legend_html = """
+        <div class="map-pop-legend">
+            <div class="map-pop-legend-title">Population (hab.)</div>
+            <div class="map-pop-legend-row"><span class="map-pop-circle s-500k"></span><span>500 000</span></div>
+            <div class="map-pop-legend-row"><span class="map-pop-circle s-250k"></span><span>250 000</span></div>
+            <div class="map-pop-legend-row"><span class="map-pop-circle s-100k"></span><span>100 000</span></div>
+            <div class="map-pop-legend-row"><span class="map-pop-circle s-50k"></span><span>50 000</span></div>
+            <div class="map-pop-legend-row"><span class="map-pop-circle s-10k"></span><span>10 000</span></div>
+        </div>
+        </div>
+        """
+    st.markdown(legend_html, unsafe_allow_html=True)
 # ----------------------
 # CHART FUNCTIONS
 # ----------------------
@@ -2050,6 +1877,46 @@ with tabs[0]:
 
             st.markdown("---")
 
+        if "Carte" in comparison_mode:
+            # Mode Carte : un seul stup affiché à la fois (via selectbox)
+            # → max 3 cartes WebGL en parallèle (parent + métabolites du stup choisi),
+            #   bien sous la limite navigateur
+            selected_stup = st.selectbox(
+                "🧪 Choisir le stupéfiant à visualiser",
+                options=available_stups,
+                key="all_carte_selected_stup",
+            )
+
+            wanted_analytes = RELATED_ANALYTES.get(selected_stup, [])
+            df_stup = df_comparison[df_comparison["composes"].isin(wanted_analytes)].copy()
+
+            if df_stup.empty:
+                st.info(f"Aucune donnée disponible pour {selected_stup}.")
+            else:
+                n_points = len(df_stup.dropna(subset=["y"]))
+
+                render_stup_panel_header(selected_stup, n_points)
+
+                available = sorted(df_stup["composes"].dropna().unique())
+                parents = [a for a in available if classify_analyte(a, selected_stup) == "parent"]
+                metabs = [a for a in available if classify_analyte(a, selected_stup) == "metabolite"]
+
+                selected_parents, selected_metabs = render_analyte_checkboxes(
+                    parents, metabs, key_prefix=f"all_carte_{selected_stup}_"
+                )
+                selected_all = selected_parents + selected_metabs
+
+                if not selected_all:
+                    st.info("Sélectionnez au moins un analyte.")
+                else:
+                    df_filtered = df_stup[df_stup["composes"].isin(selected_all)]
+                    render_comparison_with_map(
+                        df_filtered, selected_stup,
+                        key_prefix=f"all_carte_{selected_stup}_"
+                    )
+
+        else:
+            # Modes Tendances / Boxplots uniquement : boucle classique sur tous les stups
             for stup in available_stups:
                 wanted_analytes = RELATED_ANALYTES.get(stup, [])
                 df_stup = df_comparison[df_comparison["composes"].isin(wanted_analytes)].copy()
@@ -2081,14 +1948,12 @@ with tabs[0]:
                                 df_filtered, show_trend, normalize, df_mkt, start_d, end_d,
                                 stup, key_prefix=f"all_{stup}_", is_comparison=True
                             )
-                        elif "Carte" in comparison_mode:
-                            render_comparison_with_map(
-                                df_filtered, stup, key_prefix=f"all_{stup}_"
-                            )
                         else:  # Boxplots uniquement
                             render_comparison_boxplot_only(
                                 df_filtered, stup, key_prefix=f"all_{stup}_"
                             )
+
+
 
 # ----------------------
 # TABS: Par ville
