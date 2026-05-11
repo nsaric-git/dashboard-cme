@@ -18,7 +18,7 @@ home_page = st.Page(
     "pages/home.py",
     title="Accueil",
     icon="🏠",
-    default=True
+    #default=True
 )
 
 dashboard_page = st.Page(

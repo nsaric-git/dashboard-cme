@@ -2102,18 +2102,29 @@ st.markdown("""
 # ----------------------
 # SÉLECTEUR DE STEP (provisoire — sera remplacé par le login plus tard)
 # ----------------------
-col_step, col_info = st.columns([2, 3])
-with col_step:
+col_label, col_select, col_info = st.columns([2, 2, 3])
+
+with col_label:
+    st.markdown(
+        "<div style='padding-top: 0.5rem; font-size: 1.15rem; font-weight: 500;'>"
+        "👋 Vous représentez la STEP de :"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+with col_select:
     selected_step = st.selectbox(
-        "👋 Vous représentez la STEP de :",
+        label="STEP",
         options=all_available_cities,
         key="selected_step",
+        label_visibility="collapsed",
     )
+
 with col_info:
     st.markdown(
-        f"<div style='padding-top: 1.8rem; color: #666; font-size: 0.85rem;'>"
-        f"<em>ℹ️ À terme, cette sélection sera automatique après votre connexion.</em>"
-        f"</div>",
+        "<div style='padding-top: 0.6rem; color: #666; font-size: 0.95rem;'>"
+        "<em>ℹ️ À terme, cette sélection sera automatique après votre connexion.</em>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
