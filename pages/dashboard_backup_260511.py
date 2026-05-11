@@ -1805,24 +1805,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ----------------------
-# SÉLECTEUR DE STEP (provisoire — sera remplacé par le login plus tard)
-# ----------------------
-col_step, col_info = st.columns([2, 3])
-with col_step:
-    selected_step = st.selectbox(
-        "👋 Vous représentez la STEP de :",
-        options=all_available_cities,
-        key="selected_step",
-    )
-with col_info:
-    st.markdown(
-        f"<div style='padding-top: 1.8rem; color: #666; font-size: 0.85rem;'>"
-        f"<em>ℹ️ À terme, cette sélection sera automatique après votre connexion.</em>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
 with st.expander("🎨 Couleurs attribuées aux villes"):
     cols = st.columns(min(len(CITY_COLOR_MAP), 5))
     for i, (city, color) in enumerate(CITY_COLOR_MAP.items()):
@@ -1832,12 +1814,13 @@ with st.expander("🎨 Couleurs attribuées aux villes"):
 # ----------------------
 # TABS - Villes
 # ----------------------
-tabs = st.tabs(["📊 Ma STEP", "🌍 Comparaison"])
+tab_names = ["🌍 Toutes les villes"] + [f"📍 {city}" for city in all_available_cities]
+tabs = st.tabs(tab_names)
 
 # ----------------------
 # TAB: Toutes les villes (Comparaison)
 # ----------------------
-with tabs[1]:
+with tabs[0]:
     st.markdown("""
     <div class="comparison-banner">
         <span>📊</span>
@@ -1975,8 +1958,8 @@ with tabs[1]:
 # ----------------------
 # TABS: Par ville
 # ----------------------
-    with tabs[0]:
-        city = selected_step
+for i, city in enumerate(all_available_cities):
+    with tabs[i + 1]:
         df_city = df_base[df_base["ville"] == city].copy()
 
         if df_city.empty:
