@@ -534,6 +534,94 @@ st.markdown("""
 .map-pop-circle.s-100k { width: 31px; height: 31px; }
 .map-pop-circle.s-50k  { width: 24px; height: 24px; }
 .map-pop-circle.s-10k  { width: 14px; height: 14px; }
+
+/* === AGRANDISSEMENT DU TEXTE — Étape 1 (révisée 20px) === */
+
+/* Texte courant dans la zone principale */
+.main .block-container,
+.main .block-container p,
+.main .block-container li,
+.main .block-container span,
+.main .block-container div {
+    font-size: 20px;
+}
+
+/* Descriptions des stupéfiants (panel) */
+.stup-description {
+    font-size: 1rem !important;        /* ≈ 20px */
+    line-height: 1.6;
+}
+.stup-analytes {
+    font-size: 0.95rem !important;     /* ≈ 19px */
+}
+.stup-panel-title {
+    font-size: 1.4rem !important;      /* ≈ 28px */
+}
+
+/* En-têtes de section et titres d'expanders */
+[data-testid="stExpander"] summary p,
+[data-testid="stExpander"] summary {
+    font-size: 1.2rem !important;      /* ≈ 24px */
+    font-weight: 600 !important;
+}
+
+/* KPI cards — on garde la taille actuelle (validé) */
+.kpi-label {
+    font-size: 0.75rem !important;     /* taille d'origine */
+}
+.kpi-value {
+    font-size: 1.5rem !important;      /* taille d'origine */
+}
+
+/* Légende des données */
+.flag-legend {
+    font-size: 1rem !important;
+}
+
+/* Bandeau bleu principal — agrandi */
+.main-header h1 {
+    font-size: 2.5rem !important;      /* ≈ 50px */
+}
+.main-header p {
+    font-size: 1.2rem !important;      /* ≈ 24px */
+}
+
+/* Tableau récapitulatif — pour cohérence */
+.main .block-container table {
+    font-size: 1rem !important;        /* ≈ 20px */
+}
+.main .block-container table th {
+    font-size: 1rem !important;
+}
+
+/* === EXPANDERS DES STUPÉFIANTS — Étape "panel sans bulle" === */
+
+[data-testid="stExpander"] {
+    border: 1px solid #c5d4e3 !important;
+    border-radius: 10px !important;
+    background: #f4f7fb !important;
+    margin-bottom: 1rem !important;
+}
+
+[data-testid="stExpander"] summary {
+    background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%) !important;
+    border-radius: 9px 9px 0 0 !important;
+    padding: 0.85rem 1.25rem !important;
+    border-bottom: 2px solid #0f4c81 !important;
+}
+
+[data-testid="stExpander"] summary:hover {
+    background: linear-gradient(135deg, #d6e0ec 0%, #c5d4e3 100%) !important;
+}
+
+[data-testid="stExpander"] summary p {
+    color: #0f4c81 !important;
+}
+
+/* Contenu interne de l'expander */
+[data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+    padding: 1rem 1.25rem !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -613,6 +701,86 @@ def is_true_value(val) -> bool:
         return val == 1
     s = str(val).strip().lower()
     return s in ("true", "1", "yes", "oui", "vrai")
+
+def _compute_quarterly_summary(df_analyte: pd.DataFrame) -> dict:
+    """
+    Calcule les métriques de résumé pour un analyte (DataFrame déjà filtré
+    par ville + analyte + période).
+
+    Retourne :
+        - median_current     : médiane du trimestre actuel (ou None)
+        - median_previous    : médiane du trimestre civil précédent (ou None)
+        - median_first       : médiane du premier trimestre avec données (ou None)
+        - evolution_pct      : (current - previous) / previous * 100 (ou None)
+        - evolution_long_pct : (current - first) / first * 100 (ou None)
+        - n_points_total     : total de points sur toute la période filtrée
+        - quarter_current    : str du trimestre actuel (ex. "2025Q3")
+        - quarter_previous   : str du trimestre précédent (ou None)
+        - quarter_first      : str du premier trimestre (ou None)
+        - majority_flagged   : True si >50% des points du T actuel sont LOD/LOQ
+    """
+    out = {
+        "median_current": None,
+        "median_previous": None,
+        "median_first": None,
+        "evolution_pct": None,
+        "evolution_long_pct": None,
+        "n_points_total": 0,
+        "quarter_current": None,
+        "quarter_previous": None,
+        "quarter_first": None,
+        "majority_flagged": False,
+    }
+
+    if df_analyte.empty or "y" not in df_analyte.columns:
+        return out
+
+    d = df_analyte.dropna(subset=["y", "date"]).copy()
+    if d.empty:
+        return out
+
+    d["quarter"] = d["date"].dt.to_period("Q")
+    out["n_points_total"] = len(d)
+
+    quarters_with_data = sorted(d["quarter"].unique())
+    if not quarters_with_data:
+        return out
+
+    q_current = quarters_with_data[-1]
+    q_first = quarters_with_data[0]
+    q_previous_target = q_current - 1
+
+    out["quarter_current"] = str(q_current)
+
+    # Trimestre actuel
+    d_current = d[d["quarter"] == q_current]
+    out["median_current"] = float(d_current["y"].median())
+
+    # Flag majoritaire
+    if "flag_status" in d_current.columns and len(d_current) > 0:
+        n_flagged = (d_current["flag_status"].isin(["LOD", "LOQ"])).sum()
+        out["majority_flagged"] = (n_flagged / len(d_current)) > 0.5
+
+    # Trimestre précédent (court terme)
+    if q_previous_target in quarters_with_data:
+        d_previous = d[d["quarter"] == q_previous_target]
+        med_prev = float(d_previous["y"].median())
+        out["median_previous"] = med_prev
+        out["quarter_previous"] = str(q_previous_target)
+        if med_prev > 0:
+            out["evolution_pct"] = (out["median_current"] - med_prev) / med_prev * 100
+
+    # Premier trimestre (long terme)
+    # On affiche l'évolution long-terme seulement si q_first != q_current
+    if q_first != q_current:
+        d_first = d[d["quarter"] == q_first]
+        med_first = float(d_first["y"].median())
+        out["median_first"] = med_first
+        out["quarter_first"] = str(q_first)
+        if med_first > 0:
+            out["evolution_long_pct"] = (out["median_current"] - med_first) / med_first * 100
+
+    return out
 
 
 # ----------------------
@@ -1197,27 +1365,153 @@ def _adapt_xaxis(fig, series_dates):
 # RENDER FUNCTIONS
 # ----------------------
 def render_stup_panel_header(stup_name: str, n_points: int):
+    """
+    Affiche les infos descriptives du stupéfiant en texte plat (style Word),
+    sans encadré ni double bulle. Le titre est porté par l'expander parent.
+    """
     desc = STUP_DESCRIPTIONS.get(stup_name, {})
     description = desc.get("description", "Aucune description disponible.")
     parent = desc.get("parent", "Non spécifié")
-    metabolites = desc.get("metabolites", "Non spécifié")
+    metabolites = desc.get("metabolites", "non mesurés dans ce dataset")
     note = desc.get("note", "")
 
-    st.markdown(f"""
-    <div class="stup-panel">
-        <div class="stup-panel-header">
-            <span class="stup-panel-title">🧪 {stup_name}</span>
-            <span class="stup-panel-badge">{n_points} points</span>
-        </div>
-        <div class="stup-description">{description}</div>
-        <div class="stup-analytes">
-            <strong>Parent :</strong> {parent}<br>
-            <strong>Métabolites :</strong> {metabolites}
-            {f'<br><em>💡 {note}</em>' if note else ''}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Détection des cas où les métabolites ne sont pas mesurés
+    metabolites_lower = str(metabolites).lower()
+    if "non mesuré" in metabolites_lower or "not measured" in metabolites_lower:
+        metabolites_display = "non mesurés dans ce dataset"
+    else:
+        metabolites_display = metabolites
 
+    note_html = f'<p style="margin: 0.5rem 0 0 0; font-style: italic; color: #555;">💡 {note}</p>' if note else ""
+
+    st.markdown(f"""
+<div style="margin: 0.25rem 0 1rem 0;">
+    <p style="margin: 0 0 0.75rem 0;">{description}</p>
+    <p style="margin: 0.25rem 0;"><strong>Parent :</strong> {parent}</p>
+    <p style="margin: 0.25rem 0;"><strong>Métabolites :</strong> {metabolites_display}</p>
+    {note_html}
+</div>
+""", unsafe_allow_html=True)
+
+def render_step_summary_table(df_stup: pd.DataFrame, stup_name: str):
+    """
+    Tableau récapitulatif du dernier trimestre pour chaque analyte du stupéfiant.
+    Deux colonnes d'évolution : court terme (vs T-1) et long terme (vs T-premier).
+    Légende : 📈 vert > +2%, 📉 rouge < -2%, ➡️ gris sinon.
+    ⚠️ si >50% des points du T actuel sont sous LOD/LOQ.
+    """
+    if df_stup.empty:
+        return
+
+    analytes = sorted(df_stup["composes"].dropna().unique())
+    if not analytes:
+        return
+
+    summaries = []
+    for analyte in analytes:
+        df_a = df_stup[df_stup["composes"] == analyte]
+        s = _compute_quarterly_summary(df_a)
+        if s["median_current"] is not None:
+            summaries.append((analyte, s))
+
+    if not summaries:
+        return
+
+    # Trimestres de référence affichés dans les en-têtes (max parmi les analytes)
+    all_q_current = [s["quarter_current"] for _, s in summaries if s["quarter_current"]]
+    all_q_previous = [s["quarter_previous"] for _, s in summaries if s["quarter_previous"]]
+    all_q_first = [s["quarter_first"] for _, s in summaries if s["quarter_first"]]
+
+    quarter_label = max(all_q_current) if all_q_current else "—"
+    ref_previous_label = max(all_q_previous) if all_q_previous else "—"
+    ref_first_label = min(all_q_first) if all_q_first else "—"
+
+    def _format_evolution(evo):
+        """Retourne (texte, couleur) pour une valeur d'évolution en %."""
+        if evo is None:
+            return "—", "#888"
+        if evo > 2:
+            return f"📈 +{evo:.1f}%", "#22863a"
+        if evo < -2:
+            return f"📉 {evo:.1f}%", "#cb2431"
+        return f"➡️ {evo:+.1f}%", "#888"
+
+    rows_html = []
+    for analyte, summary in summaries:
+        type_label = "Parent" if classify_analyte(analyte, stup_name) == "parent" else "Métabolite"
+
+        med_c = summary["median_current"]
+        warn_icon = " ⚠️" if summary["majority_flagged"] else ""
+        warn_tip = (' title="Majorité de mesures sous LOD/LOQ — '
+                    'valeur à interpréter avec prudence"' if summary["majority_flagged"] else "")
+        med_c_str = f"{med_c:.1f}{warn_icon}"
+
+        # Court terme
+        if summary["median_previous"] is not None:
+            med_p_str = f"{summary['median_previous']:.1f}"
+            evo_short_str, evo_short_color = _format_evolution(summary["evolution_pct"])
+        else:
+            med_p_str = "—"
+            evo_short_str, evo_short_color = "—", "#888"
+
+        # Long terme
+        if summary["median_first"] is not None:
+            evo_long_str, evo_long_color = _format_evolution(summary["evolution_long_pct"])
+        else:
+            evo_long_str, evo_long_color = "—", "#888"
+
+        n_total = summary["n_points_total"]
+
+        rows_html.append(f"""
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+            <td style="padding: 0.5rem;"><strong>{analyte}</strong></td>
+            <td style="padding: 0.5rem;">{type_label}</td>
+            <td style="padding: 0.5rem;"><span{warn_tip}>{med_c_str}</span></td>
+            <td style="padding: 0.5rem;">{med_p_str}</td>
+            <td style="padding: 0.5rem; color: {evo_short_color}; font-weight: 600;">{evo_short_str}</td>
+            <td style="padding: 0.5rem; color: {evo_long_color}; font-weight: 600;">{evo_long_str}</td>
+            <td style="padding: 0.5rem; text-align: center;">{n_total}</td>
+        </tr>
+        """)
+
+    table_html = f"""
+    <div style="background: white; border: 1px solid #dee2e6; border-radius: 10px;
+                padding: 1rem; margin: 0.5rem 0 1rem 0;">
+        <div style="font-weight: 600; color: #0f4c81; margin-bottom: 0.5rem;
+                    font-size: 1.15rem;">
+            📊 Résumé du dernier trimestre disponible —
+            <span style="color: #333;">{quarter_label}</span>
+        </div>
+        <table style="width: 100%; border-collapse: collapse; font-size: 1.05rem;">
+            <thead>
+                <tr style="background: #f8f9fa; border-bottom: 2px solid #dee2e6;">
+                    <th style="text-align: left; padding: 0.5rem;">Analyte</th>
+                    <th style="text-align: left; padding: 0.5rem;">Type</th>
+                    <th style="text-align: left; padding: 0.5rem;">Médiane T actuel<br>
+                        <span style="font-weight: normal; font-size: 0.85rem;
+                                     color: #888;">(mg/j/1000 hab.)</span></th>
+                    <th style="text-align: left; padding: 0.5rem;">Médiane T précédent<br>
+                        <span style="font-weight: normal; font-size: 0.85rem;
+                                     color: #888;">(mg/j/1000 hab.)</span></th>
+                    <th style="text-align: left; padding: 0.5rem;">Évolution court terme<br>
+                        <span style="font-weight: normal; font-size: 0.85rem;
+                                     color: #888;">(vs {ref_previous_label})</span></th>
+                    <th style="text-align: left; padding: 0.5rem;">Évolution long terme<br>
+                        <span style="font-weight: normal; font-size: 0.85rem;
+                                     color: #888;">(vs {ref_first_label})</span></th>
+                    <th style="text-align: center; padding: 0.5rem;">Nb. points<br>
+                        <span style="font-weight: normal; font-size: 0.85rem;
+                                     color: #888;">(période totale)</span></th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(rows_html)}
+            </tbody>
+        </table>
+    </div>
+    """
+
+    st.html(table_html)
 
 def render_analyte_checkboxes(parents, metabs, key_prefix=""):
     selected_parents = []
@@ -2031,6 +2325,7 @@ with tabs[1]:
 
                     with st.expander(f"🧪 **{stup}** ({n_points} points)", expanded=False):
                         render_stup_panel_header(stup, n_points)
+                        render_step_summary_table(df_stup, stup)
 
                         available = sorted(df_stup["composes"].dropna().unique())
                         parents = [a for a in available if classify_analyte(a, stup) == "parent"]
