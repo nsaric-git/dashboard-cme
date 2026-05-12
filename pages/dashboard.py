@@ -248,6 +248,51 @@ STUP_DESCRIPTIONS = {
 }
 
 # ----------------------
+# NOMS COMPLETS DES ANALYTES
+# Utilisé pour l'affichage utilisateur (tableau récap, légendes, etc.)
+# Les graphiques continuent d'afficher les abréviations pour la compacité.
+# ----------------------
+ANALYTE_FULL_NAMES = {
+    "AMPH.2":            "Amphétamine",
+    "ANBS.2":            "Anabasine",
+    "COC.1":             "Cocaïne",
+    "BE.1":              "Benzoylecgonine",
+    "COE.1":             "Cocaéthylène",
+    "AEME.2":            "Anhydroecgonine méthyl ester",
+    "HER.1":             "Héroïne",
+    "6MAM.1":            "6-Monoacétylmorphine",
+    "MOR.1":             "Morphine",
+    "KET.1":             "Kétamine",
+    "Methadone.1":       "Méthadone",
+    "EDDP.1":            "EDDP",
+    "Methamphetamine.1": "Méthamphétamine",
+    "MDMA.1":            "MDMA",
+    "HMMA.1":            "HMMA",
+    "THCCOOH.2":         "THC-COOH",
+    "MPH.1":             "Méthylphénidate",
+    "AR.1":              "Acide ritalinique",
+}
+
+# ----------------------
+# MARQUEURS PRINCIPAUX
+# Pour chaque stupéfiant, l'analyte considéré comme le marqueur de référence
+# pour évaluer la consommation. Affiché en direct dans la vue Comparaison ;
+# les autres analytes sont dans des sous-expanders informatifs.
+# ----------------------
+PRIMARY_MARKERS = {
+    "Cocaïne HCL":      "BE.1",
+    "Crack":            "AEME.2",
+    "Héroïne":          "6MAM.1",
+    "Méthadone":        "EDDP.1",
+    "MDMA":             "MDMA.1",
+    "Amphétamine":      "AMPH.2",
+    "Anabasine":        "ANBS.2",
+    "Kétamine":         "KET.1",
+    "Méthamphétamine":  "Methamphetamine.1",
+    "THC":              "THCCOOH.2",
+}
+
+# ----------------------
 # CLASSIFICATION ANALYTES
 # ----------------------
 ANALYTE_OVERRIDES = {
@@ -649,6 +694,31 @@ def classify_analyte(name: str, selected_stup: str = "") -> str:
         return "metabolite"
     return "parent"
 
+def analyte_display_name(abbrev: str) -> str:
+    """
+    Retourne le nom complet d'un analyte suivi de son abréviation entre parenthèses.
+    Exemple : "AMPH.2" → "Amphétamine (AMPH.2)"
+    Si l'abréviation n'est pas dans le dictionnaire, retourne l'abréviation seule.
+    """
+    full = ANALYTE_FULL_NAMES.get(abbrev)
+    if full:
+        return f"{full} ({abbrev})"
+    return abbrev
+
+def get_primary_marker(stup_name: str) -> str | None:
+    """
+    Retourne l'abréviation du marqueur principal du stupéfiant,
+    ou None si le stupéfiant n'a pas de marqueur défini.
+    """
+    return PRIMARY_MARKERS.get(stup_name)
+
+
+def analyte_full_name_only(abbrev: str) -> str:
+    """
+    Retourne uniquement le nom complet d'un analyte (sans l'abréviation entre parenthèses).
+    Utilisé pour les titres en pleine page (ex. "Benzoylecgonine — marqueur principal").
+    """
+    return ANALYTE_FULL_NAMES.get(abbrev, abbrev)
 
 def _fmt_d(d) -> str:
     if pd.isna(d):
@@ -671,6 +741,12 @@ def style_legend(fig, size=14):
 
 
 def figure_footnote(df_plot: pd.DataFrame, y_col: str) -> str:
+    """
+    Footnote courte affichée sous le graphique principal.
+    Donne juste l'aperçu rapide : points utilisés + période.
+    Le détail (LOD/LOQ/outliers par analyte) est dans l'expander
+    "📋 Données détaillées" via render_chart_footnote_table().
+    """
     if df_plot.empty or y_col not in df_plot.columns:
         return "Aucune donnée utilisable."
     d2 = df_plot.dropna(subset=[y_col, "date"]).copy()
@@ -679,16 +755,10 @@ def figure_footnote(df_plot: pd.DataFrame, y_col: str) -> str:
     dmin, dmax = _fmt_d(d2["date"].min()), _fmt_d(d2["date"].max())
     n_total = len(d2)
 
-    info_parts = [f"Points : **{n_total}**", f"Période : **{dmin} → {dmax}**"]
-
-    if "flag_status" in d2.columns:
-        n_lod = (d2["flag_status"] == "LOD").sum()
-        n_loq = (d2["flag_status"] == "LOQ").sum()
-        n_normal = (d2["flag_status"] == "Normal").sum()
-        if n_lod > 0 or n_loq > 0:
-            info_parts.append(f"(Normal: {n_normal}, <LOQ: {n_loq}, <LOD: {n_lod})")
-
-    return " • ".join(info_parts)
+    return (
+        f"Points : <strong>{n_total}</strong> • "
+        f"Période : <strong>{dmin} → {dmax}</strong>"
+    )
 
 
 def is_true_value(val) -> bool:
@@ -1464,7 +1534,7 @@ def render_step_summary_table(df_stup: pd.DataFrame, stup_name: str):
 
         rows_html.append(f"""
         <tr style="border-bottom: 1px solid #f0f0f0;">
-            <td style="padding: 0.5rem;"><strong>{analyte}</strong></td>
+            <td style="padding: 0.5rem;"><strong>{analyte_display_name(analyte)}</strong></td>
             <td style="padding: 0.5rem;">{type_label}</td>
             <td style="padding: 0.5rem;"><span{warn_tip}>{med_c_str}</span></td>
             <td style="padding: 0.5rem;">{med_p_str}</td>
@@ -1621,6 +1691,83 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
         hide_index=True
     )
 
+def render_chart_footnote_table(df_view: pd.DataFrame, key_prefix: str = ""):
+    """
+    Affiche un tableau récapitulatif des points, LOD, LOQ et outliers
+    pour chaque analyte présent dans le graphique de tendances.
+    Utilisé uniquement dans la vue "Ma STEP" (pas en mode comparaison).
+
+    Les pourcentages sont calculés sur le nombre de points UTILISÉS
+    (= total - outliers), pour rester cohérent avec ce qui est affiché
+    dans le graphe au-dessus.
+    """
+    if df_view.empty:
+        return
+
+    analytes = sorted(df_view["composes"].dropna().unique())
+    if not analytes:
+        return
+
+    # Période globale (commune à tous les analytes affichés)
+    d_all = df_view.dropna(subset=["date"])
+    if d_all.empty:
+        return
+    dmin, dmax = _fmt_d(d_all["date"].min()), _fmt_d(d_all["date"].max())
+
+    rows_html = []
+    for analyte in analytes:
+        df_a = df_view[df_view["composes"] == analyte]
+        n_outliers = int(df_a["is_outlier"].sum()) if "is_outlier" in df_a.columns else 0
+        df_a_used = df_a.dropna(subset=["y"])
+        n_used = len(df_a_used)
+
+        if n_used == 0:
+            n_lod, n_loq = 0, 0
+            pct_lod, pct_loq = "—", "—"
+        else:
+            if "flag_status" in df_a_used.columns:
+                n_lod = int((df_a_used["flag_status"] == "LOD").sum())
+                n_loq = int((df_a_used["flag_status"] == "LOQ").sum())
+            else:
+                n_lod, n_loq = 0, 0
+            pct_lod = f"{n_lod / n_used * 100:.1f}%"
+            pct_loq = f"{n_loq / n_used * 100:.1f}%"
+
+        rows_html.append(f"""
+        <tr style="border-bottom: 1px solid #f0f0f0;">
+            <td style="padding: 0.4rem 0.6rem;"><strong>{analyte}</strong></td>
+            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_used}</td>
+            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_lod} ({pct_lod})</td>
+            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_loq} ({pct_loq})</td>
+            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_outliers}</td>
+        </tr>
+        """)
+
+    table_html = f"""
+    <div style="background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px;
+                padding: 0.75rem 1rem; margin-top: 0.5rem; font-size: 0.95rem;">
+        <div style="margin-bottom: 0.5rem; color: #555;">
+            <strong>Période :</strong> {dmin} → {dmax}
+        </div>
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="background: white; border-bottom: 2px solid #dee2e6;">
+                    <th style="text-align: left; padding: 0.4rem 0.6rem;">Analyte</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Points utilisés</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">&lt;LOD</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">&lt;LOQ</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Outliers exclus</th>
+                </tr>
+            </thead>
+            <tbody>
+                {''.join(rows_html)}
+            </tbody>
+        </table>
+    </div>
+    """
+
+    st.html(table_html)
+
 
 def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end_d,
                             stup_name, key_prefix="", is_comparison=False):
@@ -1646,7 +1793,7 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
     cats_all = sorted(df_view[color_col].dropna().unique()) if color_col in df_view.columns else []
     CATEGORY_ORDERS = {color_col: cats_all}
 
-    render_data_legend()
+
 
     fig1 = px.line(
         df_view.sort_values("date"),
@@ -1741,10 +1888,16 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
                         )
 
                 with st.expander("📋 Données détaillées (avec normalisation)"):
+                    if not is_comparison:
+                        render_chart_footnote_table(df_norm, key_prefix=f"{key_prefix}norm_")
+                        st.markdown("---")
                     render_detailed_data_table(df_norm, key_prefix=f"{key_prefix}norm_")
                 return
 
     with st.expander("📋 Données détaillées"):
+        if not is_comparison:
+            render_chart_footnote_table(df_view, key_prefix=key_prefix)
+            st.markdown("---")
         render_detailed_data_table(df_view, key_prefix=key_prefix)
 
 
@@ -1762,7 +1915,6 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
 
     global CITY_COLOR_MAP
 
-    render_data_legend()
 
     analytes = sorted(df_view["composes"].dropna().unique())
 
@@ -1888,7 +2040,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
         st.markdown("---")
 
     with st.expander("📋 Données détaillées"):
-        render_detailed_data_table(df_view, key_prefix=f"{key_prefix}map_")
+        render_detailed_data_table(df_view, key_prefix=key_prefix)
 
 
 def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
@@ -1905,7 +2057,6 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
 
     global CITY_COLOR_MAP
 
-    render_data_legend()
 
     analytes = sorted(df_view["composes"].dropna().unique())
 
@@ -1988,7 +2139,7 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
         st.plotly_chart(fig, width='stretch', key=f"{key_prefix}boxplot_{analyte}")
 
     with st.expander("📋 Données détaillées"):
-        render_detailed_data_table(df_view, key_prefix=f"{key_prefix}boxplot_")
+        render_detailed_data_table(df_view, key_prefix=key_prefix)
 
 
 # ----------------------
@@ -2001,8 +2152,6 @@ if df_wbe.empty:
     st.error("⚠️ Aucune donnée WBE chargée. Vérifiez le fichier.")
     st.stop()
 
-if "ville" in df_wbe.columns:
-    CITY_COLOR_MAP = build_city_color_map(df_wbe, COLOR_SEQ)
 
 # ----------------------
 # SIDEBAR
@@ -2074,6 +2223,13 @@ if "pays" not in df_proj.columns:
 df_base = prepare_filtered_data(df_proj, start_d, end_d)
 
 all_available_cities = sorted(df_base["ville"].dropna().unique()) if "ville" in df_base.columns else []
+
+# Construire la map des couleurs sur les villes effectivement présentes
+# dans les projets sélectionnés (cohérent avec l'expander et les graphes)
+if all_available_cities:
+    CITY_COLOR_MAP = {city: COLOR_SEQ[i % len(COLOR_SEQ)] for i, city in enumerate(all_available_cities)}
+else:
+    CITY_COLOR_MAP = {}
 
 if not all_available_cities:
     st.warning("Aucune ville disponible dans les données filtrées.")
@@ -2251,29 +2407,60 @@ with tabs[1]:
                 with st.expander(f"🧪 **{stup}** ({n_points} points)", expanded=False):
                     render_stup_panel_header(stup, n_points)
 
+                    # Identifier marqueur principal et analytes informatifs
+                    primary = get_primary_marker(stup)
                     available = sorted(df_stup["composes"].dropna().unique())
-                    parents = [a for a in available if classify_analyte(a, stup) == "parent"]
-                    metabs = [a for a in available if classify_analyte(a, stup) == "metabolite"]
+                    informative = [a for a in available if a != primary]
 
-                    selected_parents, selected_metabs = render_analyte_checkboxes(
-                        parents, metabs, key_prefix=f"all_{stup}_"
-                    )
-                    selected_all = selected_parents + selected_metabs
+                    # --- Marqueur principal : affiché en direct ---
+                    if primary and primary in available:
+                        primary_name = analyte_full_name_only(primary)
+                        st.markdown(f"### 🎯 {primary_name} — marqueur principal")
 
-                    if not selected_all:
-                        st.info("Sélectionnez au moins un analyte.")
-                    else:
-                        df_filtered = df_stup[df_stup["composes"].isin(selected_all)]
+                        df_primary = df_stup[df_stup["composes"] == primary].copy()
+                        df_primary_used = df_primary.dropna(subset=["y"])
+                        n_used = len(df_primary_used)
 
-                        if "Tendances" in comparison_mode:
-                            render_timeseries_chart(
-                                df_filtered, show_trend, normalize, df_mkt, start_d, end_d,
-                                stup, key_prefix=f"all_{stup}_", is_comparison=True
+                        if n_used == 0:
+                            st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
+                        elif "flag_status" in df_primary_used.columns and \
+                                (df_primary_used["flag_status"] == "LOD").sum() == n_used:
+                            st.info(
+                                f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
+                                f"sont en dessous de la limite de détection."
                             )
-                        else:  # Boxplots uniquement
-                            render_comparison_boxplot_only(
-                                df_filtered, stup, key_prefix=f"all_{stup}_"
-                            )
+                        else:
+                            if "Tendances" in comparison_mode:
+                                render_timeseries_chart(
+                                    df_primary, show_trend, normalize, df_mkt, start_d, end_d,
+                                    stup, key_prefix=f"all_{stup}_{primary}_",
+                                    is_comparison=True
+                                )
+                            else:  # Boxplots uniquement
+                                render_comparison_boxplot_only(
+                                    df_primary, stup, key_prefix=f"all_{stup}_{primary}_"
+                                )
+
+                    # --- Analytes informatifs : chacun dans un sous-expander fermé ---
+                    for analyte in informative:
+                        df_analyte = df_stup[df_stup["composes"] == analyte].copy()
+
+                        if df_analyte.empty:
+                            continue
+
+                        analyte_label = analyte_display_name(analyte)
+
+                        with st.expander(f"🧬 **{analyte_label}** (informatif)", expanded=False):
+                            if "Tendances" in comparison_mode:
+                                render_timeseries_chart(
+                                    df_analyte, show_trend, normalize, df_mkt, start_d, end_d,
+                                    stup, key_prefix=f"all_{stup}_{analyte}_",
+                                    is_comparison=True
+                                )
+                            else:
+                                render_comparison_boxplot_only(
+                                    df_analyte, stup, key_prefix=f"all_{stup}_{analyte}_"
+                                )
 
 
 
@@ -2292,9 +2479,6 @@ with tabs[1]:
                         unsafe_allow_html=True)
 
             n_points_total = len(df_city.dropna(subset=["y"]))
-            n_outliers = df_city["is_outlier"].sum() if "is_outlier" in df_city.columns else 0
-            n_lod = (df_city["flag_status"] == "LOD").sum() if "flag_status" in df_city.columns else 0
-            n_loq = (df_city["flag_status"] == "LOQ").sum() if "flag_status" in df_city.columns else 0
             date_range = f"{_fmt_d(df_city['date'].min())} — {_fmt_d(df_city['date'].max())}"
 
             st.markdown(f"""
@@ -2306,14 +2490,6 @@ with tabs[1]:
                 <div class="kpi-card">
                     <div class="kpi-label">📅 Période</div>
                     <div class="kpi-value" style="font-size: 1rem;">{date_range}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">🔴 <LOD / 🟠 <LOQ</div>
-                    <div class="kpi-value" style="font-size: 1rem;">{n_lod} / {n_loq}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">⚫ Outliers</div>
-                    <div class="kpi-value">{n_outliers}</div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
