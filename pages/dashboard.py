@@ -341,6 +341,46 @@ def aggregate_by_quarter(df: pd.DataFrame) -> pd.DataFrame:
     result = result.drop(columns=["_quarter"], errors="ignore")
     return result
 
+
+def compute_weighted_mean_by_quarter(df_agg: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calcule la charge moyenne pondérée par la population, par trimestre.
+
+    Entrée : DataFrame agrégé par trimestre × ville × analyte (issu de
+    aggregate_by_quarter), avec au minimum les colonnes 'date', 'y' et 'pop'.
+
+    Sortie : DataFrame avec colonnes 'date' et 'y_weighted' (une ligne par trimestre).
+
+    Formule pour chaque trimestre T :
+        y_weighted_T = Σ(y_v × pop_v) / Σ(pop_v)
+    où v itère sur les villes ayant une mesure pour T.
+
+    Les villes sans mesure pour un trimestre donné ne contribuent pas à ce trimestre
+    (la pondération s'adapte automatiquement à la composition disponible).
+    """
+    if df_agg.empty:
+        return pd.DataFrame(columns=["date", "y_weighted"])
+
+    if not {"date", "y", "pop"}.issubset(df_agg.columns):
+        return pd.DataFrame(columns=["date", "y_weighted"])
+
+    df = df_agg.dropna(subset=["y", "pop"]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=["date", "y_weighted"])
+
+    df["_y_pop"] = df["y"] * df["pop"]
+
+    grouped = df.groupby("date").agg(
+        sum_y_pop=("_y_pop", "sum"),
+        sum_pop=("pop", "sum"),
+    ).reset_index()
+
+    grouped = grouped[grouped["sum_pop"] > 0].copy()
+    grouped["y_weighted"] = grouped["sum_y_pop"] / grouped["sum_pop"]
+
+    return grouped[["date", "y_weighted"]].sort_values("date").reset_index(drop=True)
+
+
 # ----------------------
 # MARQUEURS PRINCIPAUX
 # Pour chaque stupéfiant, l'analyte considéré comme le marqueur de référence
@@ -415,29 +455,68 @@ st.markdown("""
 .main-header h1 { margin: 0; font-size: 1.8rem; font-weight: 700; }
 .main-header p { margin: 0.5rem 0 0 0; opacity: 0.9; font-size: 0.95rem; }
 
-/* Onglets */
+/* === ONGLETS — Plus visibles et plus marqués === */
+
+/* Conteneur des onglets */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 4px;
-    background: #e8eef4;
-    padding: 6px;
-    border-radius: 10px;
-    margin-bottom: 1rem;
+    gap: 0.5rem !important;
+    background: transparent !important;
+    border-bottom: 3px solid #0f4c81 !important;
+    padding-bottom: 0 !important;
+    margin: 0.5rem 0 1.5rem 0 !important;
 }
-.stTabs [data-baseweb="tab"] {
-    background: transparent;
-    border-radius: 8px;
-    padding: 10px 20px;
-    color: #0f4c81;
-    font-weight: 500;
-    font-size: 0.95rem;
-    border: none;
+
+/* Chaque onglet (inactif par défaut) */
+.stTabs [data-baseweb="tab"],
+.stTabs button[role="tab"] {
+    background: #f4f7fb !important;
+    border: 2px solid #c5d4e3 !important;
+    border-bottom: none !important;
+    border-radius: 10px 10px 0 0 !important;
+    padding: 1rem 2rem !important;
+    min-height: 3.2rem !important;
+    font-size: 1.35rem !important;
+    font-weight: 700 !important;
+    color: #0f4c81 !important;
+    transition: all 0.2s ease;
 }
-.stTabs [data-baseweb="tab"]:hover { background: rgba(15, 76, 129, 0.1); }
-.stTabs [aria-selected="true"] {
-    background: #0f4c81 !important;
+
+/* Texte à l'intérieur de chaque onglet */
+.stTabs [data-baseweb="tab"] p,
+.stTabs button[role="tab"] p {
+    font-size: 1.35rem !important;
+    font-weight: 700 !important;
+    margin: 0 !important;
+}
+
+/* Hover sur onglet inactif */
+.stTabs [data-baseweb="tab"]:hover,
+.stTabs button[role="tab"]:hover {
+    background: #e8eef4 !important;
+    border-color: #0f4c81 !important;
+    cursor: pointer;
+}
+
+/* Onglet actif — bleu marine plein */
+.stTabs [data-baseweb="tab"][aria-selected="true"],
+.stTabs button[role="tab"][aria-selected="true"] {
+    background: linear-gradient(135deg, #0f4c81 0%, #1a6bb5 100%) !important;
     color: white !important;
-    font-weight: 600;
-    box-shadow: 0 2px 8px rgba(15, 76, 129, 0.3);
+    border: 2px solid #0f4c81 !important;
+    border-bottom: none !important;
+    box-shadow: 0 -3px 10px rgba(15, 76, 129, 0.25);
+}
+
+/* Texte de l'onglet actif (forcer en blanc) */
+.stTabs [data-baseweb="tab"][aria-selected="true"] p,
+.stTabs button[role="tab"][aria-selected="true"] p {
+    color: white !important;
+}
+
+/* Cacher la ligne de soulignement par défaut */
+.stTabs [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-border"] {
+    display: none !important;
 }
 
 /* Stup Panel */
@@ -734,6 +813,27 @@ st.markdown("""
 /* Contenu interne de l'expander */
 [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
     padding: 1rem 1.25rem !important;
+}
+
+/* === SELECTBOX — Style cohérent avec la charte === */
+[data-testid="stSelectbox"] [data-baseweb="select"] > div {
+    background: #f4f7fb !important;
+    border: 2px solid #0f4c81 !important;
+    border-radius: 10px !important;
+    font-size: 1.15rem !important;
+    min-height: 3rem !important;
+    padding: 0.3rem 0.5rem !important;
+    transition: background 0.2s ease;
+}
+
+[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover {
+    background: #e8eef4 !important;
+}
+
+/* Menu déroulant des options */
+[data-baseweb="popover"] li {
+    font-size: 1.05rem !important;
+    padding: 0.6rem 1rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1292,7 +1392,8 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
                                          key: Optional[str] = None,
                                          basemap_style: str = "carto-positron",
                                          zoom: float = 7.2,
-                                         height: int = 520) -> None:
+                                         height: int = 520,
+                                         highlight_city: Optional[str] = None) -> None:
     """
     Carte des villes avec Plotly Maplibre (rapide, sans st_folium).
     - Taille des cercles ∝ population (racine carrée pour perception aire)
@@ -1375,7 +1476,25 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             center_lon = 8.2
             auto_zoom = 6.2
 
-    fig = go.Figure(go.Scattermapbox(
+    fig = go.Figure()
+
+    # Halo foncé sous la ville sélectionnée (rendu AVANT la trace principale → en arrière-plan)
+    if highlight_city is not None and highlight_city in city_df["ville"].values:
+        df_halo = city_df[city_df["ville"] == highlight_city]
+        fig.add_trace(go.Scattermapbox(
+            lat=df_halo["lat"].tolist(),
+            lon=df_halo["lon"].tolist(),
+            mode="markers",
+            marker=dict(
+                size=(df_halo["marker_size"] + 10).tolist(),  # +10px → halo visible autour
+                color="#1a1a1a",  # gris très foncé / quasi noir
+                opacity=1.0,
+            ),
+            hoverinfo="skip",  # le halo n'a pas de tooltip propre
+            showlegend=False,
+        ))
+
+    fig.add_trace(go.Scattermapbox(
         lat=city_df["lat"].tolist(),
         lon=city_df["lon"].tolist(),
         mode="markers+text",
@@ -1520,16 +1639,19 @@ def render_stup_panel_header(stup_name: str, n_points: int):
     else:
         metabolites_display = metabolites
 
-    note_html = f'<p style="margin: 0.5rem 0 0 0; font-style: italic; color: #555;">💡 {note}</p>' if note else ""
+    note_html = (
+        f'<p style="margin: 0.5rem 0 0 0; font-style: italic; color: #555; font-size: 1.25rem;">💡 {note}</p>'
+        if note else ""
+    )
 
     st.markdown(f"""
-<div style="margin: 0.25rem 0 1rem 0;">
-    <p style="margin: 0 0 0.75rem 0;">{description}</p>
-    <p style="margin: 0.25rem 0;"><strong>Parent :</strong> {parent}</p>
-    <p style="margin: 0.25rem 0;"><strong>Métabolites :</strong> {metabolites_display}</p>
-    {note_html}
-</div>
-""", unsafe_allow_html=True)
+    <div style="margin: 0.25rem 0 1rem 0; font-size: 1.25rem; line-height: 1.55;">
+        <p style="margin: 0 0 0.75rem 0;">{description}</p>
+        <p style="margin: 0.25rem 0;"><strong>Parent :</strong> {parent}</p>
+        <p style="margin: 0.25rem 0;"><strong>Métabolites :</strong> {metabolites_display}</p>
+        {note_html}
+    </div>
+    """, unsafe_allow_html=True)
 
 def render_step_summary_table(df_stup: pd.DataFrame, stup_name: str):
     """
@@ -1838,7 +1960,8 @@ def render_chart_footnote_table(df_view: pd.DataFrame, key_prefix: str = ""):
 
 
 def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end_d,
-                            stup_name, key_prefix="", is_comparison=False):
+                            stup_name, key_prefix="", is_comparison=False,
+                            highlight_city=None):
     if df_view.empty:
         st.info("Aucune donnée à afficher pour ce stupéfiant.")
         return
@@ -1870,22 +1993,60 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
         color_discrete_map=COLOR_MAP, category_orders=CATEGORY_ORDERS,
         labels={"y": "Charge (mg/j/1000 hab.)", "composes": "Analyte", "ville": "Ville", "date": "Date"},
     )
+    # Stylage des traces — avec mise en évidence si highlight_city est défini
     for tr in fig1.data:
-        tr.line.width = 2
-        tr.marker.size = 6
+        is_highlighted = (
+                highlight_city is not None
+                and color_col == "ville"
+                and (tr.name == highlight_city or tr.name.startswith(f"{highlight_city},"))
+        )
+        if highlight_city is not None and color_col == "ville":
+            # On a une ville à mettre en évidence : on contraste
+            if is_highlighted:
+                tr.line.width = 3.5
+                tr.marker.size = 8
+                tr.opacity = 1.0
+            else:
+                tr.line.width = 1.5
+                tr.marker.size = 4
+                tr.opacity = 0.4
+        else:
+            # Pas de highlight : stylage uniforme par défaut
+            tr.line.width = 2
+            tr.marker.size = 6
     fig1.update_traces(connectgaps=True)
     _adapt_xaxis(fig1, df_view["date"])
     fig1.update_layout(
         plot_bgcolor="white", paper_bgcolor="white",
         xaxis=dict(gridcolor="#f0f0f0"),
         yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero"),
-        hovermode="x unified",
+        hovermode="closest",
         height=400,
     )
     style_legend(fig1)
 
     if show_trend:
         _add_trendlines(fig1, df_view, y_col="y", color_col=color_col, dash_col=dash_col)
+
+    # Ajout de la courbe "Charge moyenne" (pondérée par la population) en mode comparaison
+    # uniquement lorsqu'on compare plusieurs villes.
+    if is_comparison and color_col == "ville" and n_cities > 1:
+        df_weighted = compute_weighted_mean_by_quarter(df_view)
+        if not df_weighted.empty:
+            fig1.add_trace(go.Scatter(
+                x=df_weighted["date"],
+                y=df_weighted["y_weighted"],
+                mode="lines",
+                name="Charge moyenne",
+                line=dict(color="#1a1a1a", width=5),
+                opacity=1.0,
+                hovertemplate=(
+                    "<b>Charge moyenne</b><br>"
+                    "Date : %{x|%b %Y}<br>"
+                    "Charge : %{y:.2f} mg/j/1000 hab.<br>"
+                    "<extra></extra>"
+                ),
+            ))
 
     st.plotly_chart(fig1, width='stretch', key=f"{key_prefix}chart_raw")
     st.markdown(f'<div class="chart-footnote">{figure_footnote(df_view, "y")}</div>', unsafe_allow_html=True)
@@ -1973,7 +2134,7 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
         render_detailed_data_table(df_view, key_prefix=key_prefix)
 
 
-def render_comparison_with_map(df_view, stup_name, key_prefix=""):
+def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city=None):
     """
     Affiche la comparaison avec CARTE (couleur = concentration) côte à côte avec boxplot.
     """
@@ -1990,24 +2151,41 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
 
     analytes = sorted(df_view["composes"].dropna().unique())
 
-    def _compute_zoom_ymax(yvals: pd.Series) -> float:
-        y = pd.to_numeric(yvals, errors="coerce").dropna()
-        if y.empty:
+    def _compute_zoom_ymax(df_with_ville_y: pd.DataFrame) -> float:
+        """
+        y_max = max des moustaches supérieures (Q3 + 1.5×IQR) PAR VILLE × 1.10.
+        → garantit que tous les boxplots sont entièrement visibles.
+        Les outliers extrêmes au-delà des moustaches peuvent être coupés
+        (mais restent visibles dans le tableau de données détaillées).
+        """
+        if df_with_ville_y.empty or "ville" not in df_with_ville_y.columns:
             return 1.0
-        y_np = y.to_numpy()
-        q1, q3 = np.percentile(y_np, [25, 75])
-        iqr = q3 - q1
-        if iqr == 0:
-            ymax = float(y.max())
-            return ymax * 1.15 if ymax > 0 else 1.0
-        upper_fence = q3 + 1.5 * iqr
-        non_out = y[y <= upper_fence]
-        whisker_max = float(non_out.max()) if not non_out.empty else float(y.max())
-        outlier_max = float(y.max())
-        if outlier_max > 1.8 * whisker_max and whisker_max > 0:
-            ymax = whisker_max * 1.15
-        else:
-            ymax = outlier_max * 1.08
+
+        df_clean = df_with_ville_y.copy()
+        df_clean["y"] = pd.to_numeric(df_clean["y"], errors="coerce")
+        df_clean = df_clean.dropna(subset=["y", "ville"])
+        if df_clean.empty:
+            return 1.0
+
+        upper_whiskers = []
+        for _, grp in df_clean.groupby("ville"):
+            y = grp["y"]
+            if y.empty:
+                continue
+            q1, q3 = np.percentile(y.to_numpy(), [25, 75])
+            iqr = q3 - q1
+            if iqr == 0:
+                upper_whiskers.append(float(y.max()))
+            else:
+                upper_fence = q3 + 1.5 * iqr
+                non_out = y[y <= upper_fence]
+                whisker_max = float(non_out.max()) if not non_out.empty else float(y.max())
+                upper_whiskers.append(whisker_max)
+
+        if not upper_whiskers:
+            return 1.0
+
+        ymax = max(upper_whiskers) * 1.10
         return max(ymax, 1.0)
 
     for analyte in analytes:
@@ -2019,7 +2197,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
 
         medians = sub.groupby("ville")["y"].median().sort_values(ascending=False)
         ville_order = list(medians.index)
-        y_max_zoom = _compute_zoom_ymax(sub["y"])
+        y_max_zoom = _compute_zoom_ymax(sub)
 
         st.markdown(f"##### Analyte : {analyte}")
 
@@ -2036,6 +2214,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
                 zoom=6.2,
                 height=480,
                 key=f"{key_prefix}map_{analyte}",
+                highlight_city=highlight_city,
             )
 
         with col_box:
@@ -2071,12 +2250,18 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
                 line = _rgba_from_scale(v_med, alpha=1.0)
                 pts = _rgba_from_scale(v_med, alpha=0.55)
 
+                # Mise en évidence si c'est la STEP sélectionnée : contour foncé épais
+                # (on préserve la couleur de fond — l'info de concentration reste lisible)
+                is_highlighted = (highlight_city is not None and ville == highlight_city)
+                box_line_color = "#1a1a1a" if is_highlighted else line
+                box_line_width = 3.0 if is_highlighted else 1.8
+
                 fig.add_trace(go.Box(
                     x=[ville] * len(sub_ville),
                     y=sub_ville['y'],
                     name=ville,
                     fillcolor=fill,
-                    line=dict(color=line, width=1.8),
+                    line=dict(color=box_line_color, width=box_line_width),
                     marker=dict(color=pts),
                     boxmean=False,
                     showlegend=False,
@@ -2115,7 +2300,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix=""):
         render_detailed_data_table(df_view, key_prefix=key_prefix)
 
 
-def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
+def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_city=None):
     """
     Affiche UNIQUEMENT les boxplots avec couleur fixe par ville (sans carte).
     """
@@ -2132,24 +2317,41 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
 
     analytes = sorted(df_view["composes"].dropna().unique())
 
-    def _compute_zoom_ymax(yvals: pd.Series) -> float:
-        y = pd.to_numeric(yvals, errors="coerce").dropna()
-        if y.empty:
+    def _compute_zoom_ymax(df_with_ville_y: pd.DataFrame) -> float:
+        """
+        y_max = max des moustaches supérieures (Q3 + 1.5×IQR) PAR VILLE × 1.10.
+        → garantit que tous les boxplots sont entièrement visibles.
+        Les outliers extrêmes au-delà des moustaches peuvent être coupés
+        (mais restent visibles dans le tableau de données détaillées).
+        """
+        if df_with_ville_y.empty or "ville" not in df_with_ville_y.columns:
             return 1.0
-        y_np = y.to_numpy()
-        q1, q3 = np.percentile(y_np, [25, 75])
-        iqr = q3 - q1
-        if iqr == 0:
-            ymax = float(y.max())
-            return ymax * 1.15 if ymax > 0 else 1.0
-        upper_fence = q3 + 1.5 * iqr
-        non_out = y[y <= upper_fence]
-        whisker_max = float(non_out.max()) if not non_out.empty else float(y.max())
-        outlier_max = float(y.max())
-        if outlier_max > 1.8 * whisker_max and whisker_max > 0:
-            ymax = whisker_max * 1.15
-        else:
-            ymax = outlier_max * 1.08
+
+        df_clean = df_with_ville_y.copy()
+        df_clean["y"] = pd.to_numeric(df_clean["y"], errors="coerce")
+        df_clean = df_clean.dropna(subset=["y", "ville"])
+        if df_clean.empty:
+            return 1.0
+
+        upper_whiskers = []
+        for _, grp in df_clean.groupby("ville"):
+            y = grp["y"]
+            if y.empty:
+                continue
+            q1, q3 = np.percentile(y.to_numpy(), [25, 75])
+            iqr = q3 - q1
+            if iqr == 0:
+                upper_whiskers.append(float(y.max()))
+            else:
+                upper_fence = q3 + 1.5 * iqr
+                non_out = y[y <= upper_fence]
+                whisker_max = float(non_out.max()) if not non_out.empty else float(y.max())
+                upper_whiskers.append(whisker_max)
+
+        if not upper_whiskers:
+            return 1.0
+
+        ymax = max(upper_whiskers) * 1.10
         return max(ymax, 1.0)
 
     for analyte in analytes:
@@ -2161,7 +2363,7 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
 
         medians = sub.groupby("ville")["y"].median().sort_values(ascending=False)
         ville_order = list(medians.index)
-        y_max_zoom = _compute_zoom_ymax(sub["y"])
+        y_max_zoom = _compute_zoom_ymax(sub)
 
         fig = go.Figure()
 
@@ -2169,11 +2371,32 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
             sub_ville = sub[sub["ville"] == ville]
             ville_color = CITY_COLOR_MAP.get(ville, COLOR_SEQ[0])
 
+            # Mise en évidence : ville sélectionnée = trait épais, opacité pleine
+            #                   autres villes = trait fin, opacité 40%
+            is_highlighted = (highlight_city is not None and ville == highlight_city)
+
+            if highlight_city is not None:
+                if is_highlighted:
+                    box_line_width = 3
+                    box_opacity = 1.0
+                    scatter_opacity = 0.7
+                else:
+                    box_line_width = 1
+                    box_opacity = 0.4
+                    scatter_opacity = 0.2
+            else:
+                # Pas de highlight : stylage par défaut
+                box_line_width = 1
+                box_opacity = 1.0
+                scatter_opacity = 0.5
+
             fig.add_trace(go.Box(
                 x=[ville] * len(sub_ville),
                 y=sub_ville["y"],
                 name=ville,
                 marker_color=ville_color,
+                line=dict(width=box_line_width),
+                opacity=box_opacity,
                 boxmean=False,
                 showlegend=False,
                 boxpoints="outliers"
@@ -2187,7 +2410,7 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix=""):
                 marker=dict(
                     color=ville_color,
                     size=5,
-                    opacity=0.5
+                    opacity=scatter_opacity
                 ),
                 hovertemplate=(
                     "Ville: %{x}<br>"
@@ -2334,7 +2557,7 @@ col_label, col_select, col_info = st.columns([2, 2, 3])
 
 with col_label:
     st.markdown(
-        "<div style='padding-top: 0.5rem; font-size: 1.15rem; font-weight: 500;'>"
+        "<div style='padding-top: 0.5rem; font-size: 1.25rem; font-weight: 500;'>"
         "👋 Vous représentez la STEP de :"
         "</div>",
         unsafe_allow_html=True,
@@ -2350,17 +2573,19 @@ with col_select:
 
 with col_info:
     st.markdown(
-        "<div style='padding-top: 0.6rem; color: #666; font-size: 0.95rem;'>"
+        "<div style='padding-top: 0.75rem; color: #666; font-size: 1.1rem;'>"
         "<em>ℹ️ À terme, cette sélection sera automatique après votre connexion.</em>"
         "</div>",
         unsafe_allow_html=True,
     )
 
-with st.expander("🎨 Couleurs attribuées aux villes"):
-    cols = st.columns(min(len(CITY_COLOR_MAP), 5))
-    for i, (city, color) in enumerate(CITY_COLOR_MAP.items()):
-        with cols[i % len(cols)]:
-            st.markdown(f'<span style="color:{color}; font-weight:bold;">● {city}</span>', unsafe_allow_html=True)
+# Expander "Couleurs attribuées aux villes" — commenté pour le moment
+# (peut être réactivé si besoin de référence visuelle des couleurs)
+# with st.expander("🎨 Couleurs attribuées aux villes"):
+#     cols = st.columns(min(len(CITY_COLOR_MAP), 5))
+#     for i, (city, color) in enumerate(CITY_COLOR_MAP.items()):
+#         with cols[i % len(cols)]:
+#             st.markdown(f'<span style="color:{color}; font-weight:bold;">● {city}</span>', unsafe_allow_html=True)
 
 # ----------------------
 # TABS - Villes
@@ -2372,13 +2597,17 @@ tabs = st.tabs(["📊 Ma STEP", "🌍 Comparaison"])
 # ----------------------
 with tabs[1]:
     st.markdown("""
-    <div class="comparison-banner">
-        <span>📊</span>
-        <strong>Mode comparaison — Vue multi-villes</strong>
+    <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                border: 2px solid #0f4c81;
+                border-radius: 10px;
+                padding: 0.85rem 1.25rem;
+                margin: 1rem 0 0.5rem 0;
+                font-size: 1.2rem;
+                font-weight: 600;
+                color: #0f4c81;">
+        🏙️ Sélectionner les villes à comparer
     </div>
     """, unsafe_allow_html=True)
-
-    st.markdown("#### 🏙️ Sélectionner les villes à comparer")
     col_btn1, col_btn2, _ = st.columns([1, 1, 4])
     with col_btn1:
         if st.button("✓ Toutes", key="select_all_cities"):
@@ -2411,31 +2640,59 @@ with tabs[1]:
         if not available_stups:
             st.warning("Aucun stupéfiant disponible pour ces villes.")
         else:
-            # Mode de comparaison avec 3 options
-            st.markdown("#### 📊 Mode de visualisation")
-            comparison_mode = st.radio(
-                "",
-                options=[
-                    "📈 Tendances temporelles",
-                    "🗺️ Carte + Boxplots (couleur carte = concentration)",
-                    "📦 Boxplots uniquement (couleur = ville)"
-                ],
-                horizontal=True,
-                key="comparison_mode",
-                label_visibility="collapsed"
-            )
+            # Barre de filtres en 2 colonnes : Mode | Stupéfiant
+            col_mode, col_stup = st.columns(2)
+
+            with col_mode:
+                st.markdown("""
+        <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                    border: 2px solid #0f4c81;
+                    border-radius: 10px;
+                    padding: 0.85rem 1.25rem;
+                    margin: 1rem 0 0.25rem 0;
+                    font-size: 1.2rem;
+                    font-weight: 600;
+                    color: #0f4c81;">
+            📊 Mode de visualisation
+        </div>
+        """, unsafe_allow_html=True)
+
+                comparison_mode = st.selectbox(
+                    label="Mode",
+                    options=[
+                        "📈 Tendances temporelles",
+                        "🗺️ Carte géographique",
+                        "📦 Boxplots uniquement (couleur = ville)"
+                    ],
+                    key="comparison_mode",
+                    label_visibility="collapsed",
+                )
+
+            with col_stup:
+                st.markdown("""
+        <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                    border: 2px solid #0f4c81;
+                    border-radius: 10px;
+                    padding: 0.85rem 1.25rem;
+                    margin: 1rem 0 0.25rem 0;
+                    font-size: 1.2rem;
+                    font-weight: 600;
+                    color: #0f4c81;">
+            🧪 Stupéfiant à visualiser
+        </div>
+        """, unsafe_allow_html=True)
+
+                selected_stup = st.selectbox(
+                    label="Stupéfiant",
+                    options=sorted(available_stups),
+                    key="comparison_selected_stup",
+                    label_visibility="collapsed",
+                )
 
             st.markdown("---")
 
         if "Carte" in comparison_mode:
-            # Mode Carte : un seul stup affiché à la fois (via selectbox)
-            # On affiche uniquement le marqueur principal de ce stup
-            selected_stup = st.selectbox(
-                "🧪 Choisir le stupéfiant à visualiser",
-                options=available_stups,
-                key="all_carte_selected_stup",
-            )
-
+            # Mode Carte : on utilise le selected_stup global (bandeau du haut)
             wanted_analytes = RELATED_ANALYTES.get(selected_stup, [])
             df_stup = df_comparison[df_comparison["composes"].isin(wanted_analytes)].copy()
 
@@ -2444,19 +2701,23 @@ with tabs[1]:
             else:
                 n_points = len(df_stup.dropna(subset=["y"]))
 
-                render_stup_panel_header(selected_stup, n_points)
-
                 # Identifier le marqueur principal — seul analyte affiché
                 primary = get_primary_marker(selected_stup)
                 available = sorted(df_stup["composes"].dropna().unique())
 
                 if not primary:
+                    render_stup_panel_header(selected_stup, n_points)
                     st.info(f"ℹ️ Aucun marqueur principal défini pour {selected_stup}.")
                 elif primary not in available:
+                    render_stup_panel_header(selected_stup, n_points)
                     st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
                 else:
                     primary_name = analyte_full_name_only(primary)
                     st.markdown(f"### 🎯 {primary_name}")
+                    render_stup_panel_header(selected_stup, n_points)
+
+                    # Tableau récap — commenté pour le moment (à réactiver plus tard si besoin)
+                    # render_step_summary_table(df_stup, selected_stup)
 
                     df_primary = df_stup[df_stup["composes"] == primary].copy()
                     df_primary = aggregate_by_quarter(df_primary)
@@ -2474,37 +2735,34 @@ with tabs[1]:
                     else:
                         render_comparison_with_map(
                             df_primary, selected_stup,
-                            key_prefix=f"all_carte_{selected_stup}_{primary}_"
+                            key_prefix=f"all_carte_{selected_stup}_{primary}_",
+                            highlight_city=selected_step,
                         )
 
         else:
-            # Modes Tendances / Boxplots uniquement : boucle classique sur tous les stups
-            for stup in available_stups:
-                wanted_analytes = RELATED_ANALYTES.get(stup, [])
-                df_stup = df_comparison[df_comparison["composes"].isin(wanted_analytes)].copy()
+            # Modes Tendances / Boxplots : on utilise le selected_stup global
+            wanted_analytes = RELATED_ANALYTES.get(selected_stup, [])
+            df_stup = df_comparison[df_comparison["composes"].isin(wanted_analytes)].copy()
 
-                if df_stup.empty:
-                    continue
-
+            if df_stup.empty:
+                st.info(f"Aucune donnée disponible pour {selected_stup}.")
+            else:
                 n_points = len(df_stup.dropna(subset=["y"]))
 
-                with st.expander(f"🧪 **{stup}** ({n_points} points)", expanded=False):
-                    render_stup_panel_header(stup, n_points)
+                # Identifier le marqueur principal — seul analyte affiché
+                primary = get_primary_marker(selected_stup)
+                available = sorted(df_stup["composes"].dropna().unique())
 
-                    # Identifier le marqueur principal — seul analyte affiché
-                    primary = get_primary_marker(stup)
-                    available = sorted(df_stup["composes"].dropna().unique())
-
-                    if not primary:
-                        st.info(f"ℹ️ Aucun marqueur principal défini pour {stup}.")
-                        continue
-
-                    if primary not in available:
-                        st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {stup}.")
-                        continue
-
+                if not primary:
+                    render_stup_panel_header(selected_stup, n_points)
+                    st.info(f"ℹ️ Aucun marqueur principal défini pour {selected_stup}.")
+                elif primary not in available:
+                    render_stup_panel_header(selected_stup, n_points)
+                    st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
+                else:
                     primary_name = analyte_full_name_only(primary)
                     st.markdown(f"### 🎯 {primary_name}")
+                    render_stup_panel_header(selected_stup, n_points)
 
                     df_primary = df_stup[df_stup["composes"] == primary].copy()
                     df_primary = aggregate_by_quarter(df_primary)
@@ -2523,12 +2781,15 @@ with tabs[1]:
                         if "Tendances" in comparison_mode:
                             render_timeseries_chart(
                                 df_primary, show_trend, normalize, df_mkt, start_d, end_d,
-                                stup, key_prefix=f"all_{stup}_{primary}_",
-                                is_comparison=True
+                                selected_stup, key_prefix=f"all_{selected_stup}_{primary}_",
+                                is_comparison=True,
+                                highlight_city=selected_step,
                             )
                         else:  # Boxplots uniquement
                             render_comparison_boxplot_only(
-                                df_primary, stup, key_prefix=f"all_{stup}_{primary}_"
+                                df_primary, selected_stup,
+                                key_prefix=f"all_{selected_stup}_{primary}_",
+                                highlight_city=selected_step,
                             )
 
 
@@ -2543,10 +2804,6 @@ with tabs[1]:
         if df_city.empty:
             st.warning(f"Aucune donnée pour **{city}**.")
         else:
-            city_color = CITY_COLOR_MAP.get(city, "#0f4c81")
-            st.markdown(f'<span class="city-badge" style="background: {city_color};">📍 {city}</span>',
-                        unsafe_allow_html=True)
-
             n_points_total = len(df_city.dropna(subset=["y"]))
             date_range = f"{_fmt_d(df_city['date'].min())} — {_fmt_d(df_city['date'].max())}"
 
@@ -2570,35 +2827,49 @@ with tabs[1]:
             if not available_stups:
                 st.info("Aucun stupéfiant détecté pour cette ville.")
             else:
-                for stup in available_stups:
-                    wanted_analytes = RELATED_ANALYTES.get(stup, [])
-                    df_stup = df_city[df_city["composes"].isin(wanted_analytes)].copy()
+                # Bandeau visuel autour du selectbox stupéfiant
+                st.markdown("""
+                <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                            border: 2px solid #0f4c81;
+                            border-radius: 10px;
+                            padding: 0.85rem 1.25rem;
+                            margin: 1rem 0 0.25rem 0;
+                            font-size: 1.2rem;
+                            font-weight: 600;
+                            color: #0f4c81;">
+                    🧪 Quel stupéfiant voulez-vous visualiser ?
+                </div>
+                """, unsafe_allow_html=True)
 
-                    if df_stup.empty:
-                        continue
+                selected_stup = st.selectbox(
+                    label="Stupéfiant",
+                    options=sorted(available_stups),
+                    key=f"mastep_{city}_selected_stup",
+                    label_visibility="collapsed",
+                )
 
+                wanted_analytes = RELATED_ANALYTES.get(selected_stup, [])
+                df_stup = df_city[df_city["composes"].isin(wanted_analytes)].copy()
+
+                if df_stup.empty:
+                    st.info(f"Aucune donnée disponible pour {selected_stup}.")
+                else:
                     n_points = len(df_stup.dropna(subset=["y"]))
 
-                    with st.expander(f"🧪 **{stup}** ({n_points} points)", expanded=False):
-                        render_stup_panel_header(stup, n_points)
+                    # Identifier le marqueur principal — seul analyte affiché
+                    primary = get_primary_marker(selected_stup)
+                    available = sorted(df_stup["composes"].dropna().unique())
 
-                        # Tableau récap — commenté pour le moment (à réactiver plus tard si besoin)
-                        # render_step_summary_table(df_stup, stup)
-
-                        # Identifier le marqueur principal — seul analyte affiché
-                        primary = get_primary_marker(stup)
-                        available = sorted(df_stup["composes"].dropna().unique())
-
-                        if not primary:
-                            st.info(f"ℹ️ Aucun marqueur principal défini pour {stup}.")
-                            continue
-
-                        if primary not in available:
-                            st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {stup}.")
-                            continue
-
+                    if not primary:
+                        render_stup_panel_header(selected_stup, n_points)
+                        st.info(f"ℹ️ Aucun marqueur principal défini pour {selected_stup}.")
+                    elif primary not in available:
+                        render_stup_panel_header(selected_stup, n_points)
+                        st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
+                    else:
                         primary_name = analyte_full_name_only(primary)
                         st.markdown(f"### 🎯 {primary_name}")
+                        render_stup_panel_header(selected_stup, n_points)
 
                         df_primary = df_stup[df_stup["composes"] == primary].copy()
                         df_primary = aggregate_by_quarter(df_primary)
@@ -2616,7 +2887,7 @@ with tabs[1]:
                         else:
                             render_timeseries_chart(
                                 df_primary, show_trend, normalize, df_mkt, start_d, end_d,
-                                stup, key_prefix=f"{city}_{stup}_{primary}_",
+                                selected_stup, key_prefix=f"{city}_{selected_stup}_{primary}_",
                                 is_comparison=False
                             )
 
