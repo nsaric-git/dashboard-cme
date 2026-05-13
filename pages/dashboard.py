@@ -272,6 +272,74 @@ ANALYTE_FULL_NAMES = {
     "MPH.1":             "Méthylphénidate",
     "AR.1":              "Acide ritalinique",
 }
+def aggregate_by_quarter(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Agrège les mesures par trimestre civil × ville × analyte selon la règle :
+    - Si pool_daily == "pool" pour au moins une ligne du trimestre → on garde
+      cette/ces ligne(s) pool, les autres (daily) sont ignorées.
+    - Sinon (que des "daily") → moyenne arithmétique de y (les outliers sont
+      déjà NaN et ignorés par mean()). La date du point agrégé est le 1er jour
+      du trimestre.
+
+    Lève une erreur explicite si une ligne a pool_daily non renseigné ou avec
+    une valeur inattendue.
+    """
+    if df.empty:
+        return df.copy()
+
+    if "pool_daily" not in df.columns:
+        raise ValueError(
+            "La colonne 'pool_daily' est absente du DataFrame. "
+            "Vérifie qu'elle est bien présente dans le fichier Excel source."
+        )
+
+    d = df.copy()
+
+    # Normaliser pool_daily (lower + strip)
+    d["pool_daily"] = d["pool_daily"].astype(str).str.strip().str.lower()
+
+    # Vérifier que toutes les valeurs sont "pool" ou "daily"
+    invalid_mask = ~d["pool_daily"].isin(["pool", "daily"])
+    if invalid_mask.any():
+        n_invalid = int(invalid_mask.sum())
+        examples = d.loc[invalid_mask, "pool_daily"].head(5).tolist()
+        raise ValueError(
+            f"{n_invalid} ligne(s) ont une valeur 'pool_daily' invalide. "
+            f"Valeurs attendues : 'pool' ou 'daily'. "
+            f"Exemples trouvés : {examples}"
+        )
+
+    # Trimestre civil
+    d["_quarter"] = d["date"].dt.to_period("Q")
+
+    aggregated_rows = []
+    grp_cols = ["_quarter", "ville", "composes"]
+
+    for (quarter, ville, composes), group in d.groupby(grp_cols, dropna=False):
+        pool_rows = group[group["pool_daily"] == "pool"]
+
+        if len(pool_rows) > 0:
+            # Au moins un pool → priorité, on garde les pool tels quels
+            for _, row in pool_rows.iterrows():
+                aggregated_rows.append(row.to_dict())
+        else:
+            # Que des daily → moyenne arithmétique de y
+            mean_y = group["y"].mean()  # skipna=True par défaut
+            if pd.isna(mean_y):
+                # Tous les y sont NaN (tous outliers) → on saute
+                continue
+
+            new_row = group.iloc[0].to_dict()
+            new_row["y"] = mean_y
+            new_row["date"] = quarter.start_time  # 1er jour du trimestre
+            aggregated_rows.append(new_row)
+
+    if not aggregated_rows:
+        return pd.DataFrame(columns=df.columns)
+
+    result = pd.DataFrame(aggregated_rows)
+    result = result.drop(columns=["_quarter"], errors="ignore")
+    return result
 
 # ----------------------
 # MARQUEURS PRINCIPAUX
@@ -1809,7 +1877,8 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
     _adapt_xaxis(fig1, df_view["date"])
     fig1.update_layout(
         plot_bgcolor="white", paper_bgcolor="white",
-        xaxis=dict(gridcolor="#f0f0f0"), yaxis=dict(gridcolor="#f0f0f0"),
+        xaxis=dict(gridcolor="#f0f0f0"),
+        yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero"),
         hovermode="x unified",
         height=400,
     )
@@ -1858,7 +1927,10 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
                     _adapt_xaxis(fig2, df_norm_plot["date"])
                     fig2.update_layout(
                         plot_bgcolor="white", paper_bgcolor="white",
-                        height=350,
+                        xaxis=dict(gridcolor="#f0f0f0"),
+                        yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero"),
+                        hovermode="x unified",
+                        height=400,
                     )
                     style_legend(fig2)
 
@@ -2357,8 +2429,7 @@ with tabs[1]:
 
         if "Carte" in comparison_mode:
             # Mode Carte : un seul stup affiché à la fois (via selectbox)
-            # → max 3 cartes WebGL en parallèle (parent + métabolites du stup choisi),
-            #   bien sous la limite navigateur
+            # On affiche uniquement le marqueur principal de ce stup
             selected_stup = st.selectbox(
                 "🧪 Choisir le stupéfiant à visualiser",
                 options=available_stups,
@@ -2375,23 +2446,36 @@ with tabs[1]:
 
                 render_stup_panel_header(selected_stup, n_points)
 
+                # Identifier le marqueur principal — seul analyte affiché
+                primary = get_primary_marker(selected_stup)
                 available = sorted(df_stup["composes"].dropna().unique())
-                parents = [a for a in available if classify_analyte(a, selected_stup) == "parent"]
-                metabs = [a for a in available if classify_analyte(a, selected_stup) == "metabolite"]
 
-                selected_parents, selected_metabs = render_analyte_checkboxes(
-                    parents, metabs, key_prefix=f"all_carte_{selected_stup}_"
-                )
-                selected_all = selected_parents + selected_metabs
-
-                if not selected_all:
-                    st.info("Sélectionnez au moins un analyte.")
+                if not primary:
+                    st.info(f"ℹ️ Aucun marqueur principal défini pour {selected_stup}.")
+                elif primary not in available:
+                    st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
                 else:
-                    df_filtered = df_stup[df_stup["composes"].isin(selected_all)]
-                    render_comparison_with_map(
-                        df_filtered, selected_stup,
-                        key_prefix=f"all_carte_{selected_stup}_"
-                    )
+                    primary_name = analyte_full_name_only(primary)
+                    st.markdown(f"### 🎯 {primary_name}")
+
+                    df_primary = df_stup[df_stup["composes"] == primary].copy()
+                    df_primary = aggregate_by_quarter(df_primary)
+                    df_primary_used = df_primary.dropna(subset=["y"])
+                    n_used = len(df_primary_used)
+
+                    if n_used == 0:
+                        st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
+                    elif "flag_status" in df_primary_used.columns and \
+                            (df_primary_used["flag_status"] == "LOD").sum() == n_used:
+                        st.info(
+                            f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
+                            f"sont en dessous de la limite de détection."
+                        )
+                    else:
+                        render_comparison_with_map(
+                            df_primary, selected_stup,
+                            key_prefix=f"all_carte_{selected_stup}_{primary}_"
+                        )
 
         else:
             # Modes Tendances / Boxplots uniquement : boucle classique sur tous les stups
@@ -2407,60 +2491,45 @@ with tabs[1]:
                 with st.expander(f"🧪 **{stup}** ({n_points} points)", expanded=False):
                     render_stup_panel_header(stup, n_points)
 
-                    # Identifier marqueur principal et analytes informatifs
+                    # Identifier le marqueur principal — seul analyte affiché
                     primary = get_primary_marker(stup)
                     available = sorted(df_stup["composes"].dropna().unique())
-                    informative = [a for a in available if a != primary]
 
-                    # --- Marqueur principal : affiché en direct ---
-                    if primary and primary in available:
-                        primary_name = analyte_full_name_only(primary)
-                        st.markdown(f"### 🎯 {primary_name} — marqueur principal")
+                    if not primary:
+                        st.info(f"ℹ️ Aucun marqueur principal défini pour {stup}.")
+                        continue
 
-                        df_primary = df_stup[df_stup["composes"] == primary].copy()
-                        df_primary_used = df_primary.dropna(subset=["y"])
-                        n_used = len(df_primary_used)
+                    if primary not in available:
+                        st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {stup}.")
+                        continue
 
-                        if n_used == 0:
-                            st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
-                        elif "flag_status" in df_primary_used.columns and \
-                                (df_primary_used["flag_status"] == "LOD").sum() == n_used:
-                            st.info(
-                                f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
-                                f"sont en dessous de la limite de détection."
+                    primary_name = analyte_full_name_only(primary)
+                    st.markdown(f"### 🎯 {primary_name}")
+
+                    df_primary = df_stup[df_stup["composes"] == primary].copy()
+                    df_primary = aggregate_by_quarter(df_primary)
+                    df_primary_used = df_primary.dropna(subset=["y"])
+                    n_used = len(df_primary_used)
+
+                    if n_used == 0:
+                        st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
+                    elif "flag_status" in df_primary_used.columns and \
+                            (df_primary_used["flag_status"] == "LOD").sum() == n_used:
+                        st.info(
+                            f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
+                            f"sont en dessous de la limite de détection."
+                        )
+                    else:
+                        if "Tendances" in comparison_mode:
+                            render_timeseries_chart(
+                                df_primary, show_trend, normalize, df_mkt, start_d, end_d,
+                                stup, key_prefix=f"all_{stup}_{primary}_",
+                                is_comparison=True
                             )
-                        else:
-                            if "Tendances" in comparison_mode:
-                                render_timeseries_chart(
-                                    df_primary, show_trend, normalize, df_mkt, start_d, end_d,
-                                    stup, key_prefix=f"all_{stup}_{primary}_",
-                                    is_comparison=True
-                                )
-                            else:  # Boxplots uniquement
-                                render_comparison_boxplot_only(
-                                    df_primary, stup, key_prefix=f"all_{stup}_{primary}_"
-                                )
-
-                    # --- Analytes informatifs : chacun dans un sous-expander fermé ---
-                    for analyte in informative:
-                        df_analyte = df_stup[df_stup["composes"] == analyte].copy()
-
-                        if df_analyte.empty:
-                            continue
-
-                        analyte_label = analyte_display_name(analyte)
-
-                        with st.expander(f"🧬 **{analyte_label}** (informatif)", expanded=False):
-                            if "Tendances" in comparison_mode:
-                                render_timeseries_chart(
-                                    df_analyte, show_trend, normalize, df_mkt, start_d, end_d,
-                                    stup, key_prefix=f"all_{stup}_{analyte}_",
-                                    is_comparison=True
-                                )
-                            else:
-                                render_comparison_boxplot_only(
-                                    df_analyte, stup, key_prefix=f"all_{stup}_{analyte}_"
-                                )
+                        else:  # Boxplots uniquement
+                            render_comparison_boxplot_only(
+                                df_primary, stup, key_prefix=f"all_{stup}_{primary}_"
+                            )
 
 
 
@@ -2512,25 +2581,43 @@ with tabs[1]:
 
                     with st.expander(f"🧪 **{stup}** ({n_points} points)", expanded=False):
                         render_stup_panel_header(stup, n_points)
-                        render_step_summary_table(df_stup, stup)
 
+                        # Tableau récap — commenté pour le moment (à réactiver plus tard si besoin)
+                        # render_step_summary_table(df_stup, stup)
+
+                        # Identifier le marqueur principal — seul analyte affiché
+                        primary = get_primary_marker(stup)
                         available = sorted(df_stup["composes"].dropna().unique())
-                        parents = [a for a in available if classify_analyte(a, stup) == "parent"]
-                        metabs = [a for a in available if classify_analyte(a, stup) == "metabolite"]
 
-                        selected_parents, selected_metabs = render_analyte_checkboxes(
-                            parents, metabs, key_prefix=f"{city}_{stup}_"
-                        )
-                        selected_all = selected_parents + selected_metabs
+                        if not primary:
+                            st.info(f"ℹ️ Aucun marqueur principal défini pour {stup}.")
+                            continue
 
-                        if not selected_all:
-                            st.info("Sélectionnez au moins un analyte.")
+                        if primary not in available:
+                            st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {stup}.")
+                            continue
+
+                        primary_name = analyte_full_name_only(primary)
+                        st.markdown(f"### 🎯 {primary_name}")
+
+                        df_primary = df_stup[df_stup["composes"] == primary].copy()
+                        df_primary = aggregate_by_quarter(df_primary)
+                        df_primary_used = df_primary.dropna(subset=["y"])
+                        n_used = len(df_primary_used)
+
+                        if n_used == 0:
+                            st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
+                        elif "flag_status" in df_primary_used.columns and \
+                                (df_primary_used["flag_status"] == "LOD").sum() == n_used:
+                            st.info(
+                                f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
+                                f"sont en dessous de la limite de détection."
+                            )
                         else:
-                            df_filtered = df_stup[df_stup["composes"].isin(selected_all)]
-
                             render_timeseries_chart(
-                                df_filtered, show_trend, normalize, df_mkt, start_d, end_d,
-                                stup, key_prefix=f"{city}_{stup}_", is_comparison=False
+                                df_primary, show_trend, normalize, df_mkt, start_d, end_d,
+                                stup, key_prefix=f"{city}_{stup}_{primary}_",
+                                is_comparison=False
                             )
 
 # ----------------------
