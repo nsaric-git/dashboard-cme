@@ -2476,21 +2476,30 @@ if df_wbe.empty:
 with st.sidebar:
     st.markdown("## ⚙️ Filtres")
 
-    with st.expander("📁 **Projets**", expanded=True):
-        if "projet" in df_wbe.columns:
-            all_projects = sorted([p for p in df_wbe["projet"].dropna().astype(str).unique() if p.upper() != "SCORE"])
-            selected_projects = []
-            for p in all_projects:
-                k = f"proj_{p}"
-                if k not in st.session_state:
-                    st.session_state[k] = True
-                if st.checkbox(p, key=k):
-                    selected_projects.append(p)
-            if not selected_projects:
-                st.warning("Sélectionnez au moins un projet")
-                st.stop()
-        else:
-            selected_projects = []
+    # Récupération du rôle de l'utilisateur connecté
+    is_admin = st.session_state.get("is_admin", False)
+
+    if is_admin:
+        # Admin : filtre projets visible et interactif
+        with st.expander("📁 **Projets**", expanded=True):
+            if "projet" in df_wbe.columns:
+                all_projects = sorted(
+                    [p for p in df_wbe["projet"].dropna().astype(str).unique() if p.upper() != "SCORE"])
+                selected_projects = []
+                for p in all_projects:
+                    k = f"proj_{p}"
+                    if k not in st.session_state:
+                        st.session_state[k] = True
+                    if st.checkbox(p, key=k):
+                        selected_projects.append(p)
+                if not selected_projects:
+                    st.warning("Sélectionnez au moins un projet")
+                    st.stop()
+            else:
+                selected_projects = []
+    else:
+        # Utilisateur STEP : projets restreints à ChaMalEaux + DroMedARio, filtre caché
+        selected_projects = ["ChaMalEaux", "DroMedARio"]
 
     st.markdown("### 📅 Période")
     min_d, max_d = df_wbe["date"].min().date(), df_wbe["date"].max().date()
@@ -2573,31 +2582,67 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------------
-# SÉLECTEUR DE STEP (provisoire — sera remplacé par le login plus tard)
+# SÉLECTEUR DE STEP — adapté au rôle de l'utilisateur connecté
 # ----------------------
-col_label, col_select, col_info = st.columns([2, 2, 3])
+# Récupère les infos utilisateur depuis session_state (déposées par app.py)
+is_admin_user = st.session_state.get("is_admin", False)
+user_city = st.session_state.get("user_city", None)
 
-with col_label:
+if is_admin_user:
+    # Admin : selectbox libre comme avant
+    col_label, col_select, col_info = st.columns([2, 2, 3])
+
+    with col_label:
+        st.markdown(
+            "<div style='padding-top: 0.5rem; font-size: 1.25rem; font-weight: 500;'>"
+            "👋 Vous représentez la STEP de :"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    with col_select:
+        selected_step = st.selectbox(
+            label="STEP",
+            options=all_available_cities,
+            key="selected_step",
+            label_visibility="collapsed",
+        )
+
+    with col_info:
+        st.markdown(
+            "<div style='padding-top: 0.75rem; color: #666; font-size: 1.1rem;'>"
+            "<em>ℹ️ Vous pouvez choisir librement la STEP à analyser (mode admin).</em>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+else:
+    # Utilisateur STEP : ville verrouillée sur la ville associée à son compte
+    if user_city not in all_available_cities:
+        st.error(
+            f"❌ Votre STEP ({user_city}) n'est pas disponible dans les données chargées. "
+            f"Vérifiez que les projets ChaMalEaux/DroMedARio contiennent bien votre ville. "
+            f"Si le problème persiste, contactez l'administrateur."
+        )
+        st.stop()
+
+    selected_step = user_city
+
+    # Affichage en lecture seule pour bien indiquer que la STEP est fixée
     st.markdown(
-        "<div style='padding-top: 0.5rem; font-size: 1.25rem; font-weight: 500;'>"
-        "👋 Vous représentez la STEP de :"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-with col_select:
-    selected_step = st.selectbox(
-        label="STEP",
-        options=all_available_cities,
-        key="selected_step",
-        label_visibility="collapsed",
-    )
-
-with col_info:
-    st.markdown(
-        "<div style='padding-top: 0.75rem; color: #666; font-size: 1.1rem;'>"
-        "<em>ℹ️ À terme, cette sélection sera automatique après votre connexion.</em>"
-        "</div>",
+        f"""
+        <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                    border: 2px solid #0f4c81;
+                    border-radius: 10px;
+                    padding: 0.85rem 1.25rem;
+                    margin: 1rem 0 0.5rem 0;
+                    font-size: 1.2rem;
+                    color: #0f4c81;">
+            👋 <strong>STEP de {selected_step}</strong> &nbsp;—&nbsp;
+            <span style="font-size: 1rem; font-weight: 400;">
+                Vous consultez les données de votre STEP.
+            </span>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
