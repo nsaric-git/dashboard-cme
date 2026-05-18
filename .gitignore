@@ -51,3 +51,12 @@ desktop.ini
 # ============================================
 *.log
 .cache/
+
+# ============================================
+# Fichiers de données (hébergés sur Google Drive)
+# Ne JAMAIS commiter ces fichiers - ils sont sensibles
+# ============================================
+*.xlsx
+*.xls
+*.xlsm
+*.csv
