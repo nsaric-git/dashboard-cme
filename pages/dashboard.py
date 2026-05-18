@@ -18,13 +18,17 @@ import re
 import requests
 from datetime import date
 from typing import Optional
+import io
+from gdrive_loader import load_excel_from_drive
 import streamlit.components.v1 as components
 
 # ----------------------
 # FICHIERS DE DONNÉES
 # ----------------------
-WBE_PATH = "260205_WW_AllData_LA_v2.xlsx" #"250430_WW_AllData_LA_v2.xlsx"
-SEIZURE_PATH = "251113_Data.xlsx"
+# IDs Google Drive des fichiers de données
+# Les fichiers sont téléchargés via gdrive_loader (Service Account)
+WBE_FILE_ID = "1vGBTXdHuo9NJMC5kUjrBeQDcd1AY2gOD"
+SEIZURE_FILE_ID = "1wqeUe_p-THC1iHs_4WKd5jc1fDf8UdZB"
 
 # ----------------------
 # COULEURS - Palette étendue pour les villes
@@ -1025,9 +1029,18 @@ def _compute_quarterly_summary(df_analyte: pd.DataFrame) -> dict:
 # DATA LOADERS
 # ----------------------
 @st.cache_data
-def load_wbe(path: str) -> pd.DataFrame:
+def load_wbe(source) -> pd.DataFrame:
+    """
+    Charge le fichier WBE.
+    source peut être :
+    - un chemin (str ou Path) vers un fichier Excel local
+    - des bytes (contenu d'un fichier téléchargé depuis Drive)
+    """
     try:
-        df = pd.read_excel(path)
+        if isinstance(source, bytes):
+            df = pd.read_excel(io.BytesIO(source))
+        else:
+            df = pd.read_excel(source)
     except FileNotFoundError:
         return pd.DataFrame()
     df.columns = [c.strip().lower() for c in df.columns]
@@ -1046,9 +1059,18 @@ def load_wbe(path: str) -> pd.DataFrame:
     return df.dropna(subset=["date"]).copy()
 
 @st.cache_data
-def load_market(path: str) -> pd.DataFrame:
+def load_market(source) -> pd.DataFrame:
+    """
+    Charge le fichier marché (saisies / pureté).
+    source peut être :
+    - un chemin (str ou Path) vers un fichier Excel local
+    - des bytes (contenu d'un fichier téléchargé depuis Drive)
+    """
     try:
-        dm = pd.read_excel(path)
+        if isinstance(source, bytes):
+            dm = pd.read_excel(io.BytesIO(source))
+        else:
+            dm = pd.read_excel(source)
     except Exception:
         return pd.DataFrame()
     dm.columns = [c.strip().lower() for c in dm.columns]
@@ -2021,7 +2043,7 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
         xaxis=dict(gridcolor="#f0f0f0"),
         yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero"),
         hovermode="closest",
-        height=400,
+        height=550,
     )
     style_legend(fig1)
 
@@ -2090,8 +2112,8 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
                         plot_bgcolor="white", paper_bgcolor="white",
                         xaxis=dict(gridcolor="#f0f0f0"),
                         yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero"),
-                        hovermode="x unified",
-                        height=400,
+                        hovermode="closest",
+                        height=550,
                     )
                     style_legend(fig2)
 
@@ -2440,8 +2462,8 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_
 # ----------------------
 # LOAD DATA
 # ----------------------
-df_wbe = load_wbe(WBE_PATH)
-df_mkt = load_market(SEIZURE_PATH)
+df_wbe = load_wbe(load_excel_from_drive(WBE_FILE_ID))
+df_mkt = load_market(load_excel_from_drive(SEIZURE_FILE_ID))
 
 if df_wbe.empty:
     st.error("⚠️ Aucune donnée WBE chargée. Vérifiez le fichier.")

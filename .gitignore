@@ -24,6 +24,14 @@ __pycache__/
 .streamlit/secrets.toml
 
 # ============================================
+# Credentials sensibles (Service Account Google, etc.)
+# ============================================
+.streamlit/gdrive_credentials.json
+.streamlit/*.json
+*credentials*.json
+*service-account*.json
+
+# ============================================
 # Fichiers temporaires Excel / Office
 # ============================================
 ~$*.xlsx
