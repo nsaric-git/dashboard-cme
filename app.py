@@ -2,12 +2,16 @@
 # =========================================================
 # app.py - Point d'entrée multi-pages avec authentification
 # =========================================================
+
+
+
 from pathlib import Path
 
 import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
+
 
 # Configuration globale (s'applique à toutes les pages)
 st.set_page_config(
@@ -24,15 +28,42 @@ st.set_page_config(
 CONFIG_PATH = Path("auth_config.yaml")
 
 
+def _secrets_to_dict(obj):
+    """
+    Convertit récursivement un objet Streamlit Secrets (immuable) en dict Python natif (mutable).
+    Nécessaire parce que streamlit-authenticator essaie de modifier la config.
+    """
+    if hasattr(obj, "keys"):
+        return {k: _secrets_to_dict(obj[k]) for k in obj.keys()}
+    elif isinstance(obj, list):
+        return [_secrets_to_dict(item) for item in obj]
+    else:
+        return obj
+
+
+def _secrets_to_dict(obj):
+    """
+    Convertit récursivement un objet Streamlit Secrets (immuable) en dict Python natif (mutable).
+    Nécessaire parce que streamlit-authenticator essaie de modifier la config.
+    """
+    if hasattr(obj, "keys"):
+        return {k: _secrets_to_dict(obj[k]) for k in obj.keys()}
+    elif isinstance(obj, list):
+        return [_secrets_to_dict(item) for item in obj]
+    else:
+        return obj
+
+
 def _load_auth_config() -> dict:
     """
     Charge la configuration d'authentification.
     Priorité : Streamlit Secrets (cloud) > fichier YAML local.
+    Conversion en dict natif pour permettre les modifications par streamlit-authenticator.
     """
     # Essai 1 : Streamlit Secrets (déploiement cloud)
     try:
         if "auth_config" in st.secrets:
-            return dict(st.secrets["auth_config"])
+            return _secrets_to_dict(st.secrets["auth_config"])
     except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
         pass
 
@@ -106,3 +137,4 @@ dashboard_page = st.Page(
 
 pg = st.navigation([home_page, dashboard_page])
 pg.run()
+
