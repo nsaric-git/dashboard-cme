@@ -60,3 +60,8 @@ desktop.ini
 *.xls
 *.xlsm
 *.csv
+
+# ============================================
+# Configuration d'authentification (contient hashs + clé secrète)
+# ============================================
+auth_config.yaml
