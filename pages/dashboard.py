@@ -226,7 +226,7 @@ STUP_DESCRIPTIONS = {
         "description": "L'héroïne est un opioïde, dérivé de la morphine extraite du pavot. Elle est principalement injectée, sniffée ou fumée. Une fois consommée, elle est métabolisée en morphine, qui est le seul marqueur stable mesurable dans les eaux usées. Ce marqueur ne permet toutefois pas de distinguer l'usage illicite d'héroïne des usages médicaux légaux (morphine, codéine).",
         "parent": "Héroïne (HER)",
         "metabolites": "Morphine (MOR)",
-        "note": "Le 6-MAM (6-Monoacétylmorphin) est le marqueur le plus spécifique de la consommation d'héroïne."
+        "note": "Il existe un marqueur plus spécifique mais sa très courte demi-vie le rend instable dans les eaux usées, d'où le choix de la morphine."
     },
     "Kétamine": {
         "description": "La kétamine est un anesthésique dissociatif, utilisé en médecine mais aussi détourné comme drogue récréative. Sous sa forme récréative, elle se présente sous forme de poudre blanche, principalement sniffée. Le marqueur utilisé dans les eaux usées est la kétamine elle-même, excrétée en partie inchangée par l'organisme.",
@@ -403,7 +403,7 @@ def compute_weighted_mean_by_quarter(df_agg: pd.DataFrame) -> pd.DataFrame:
 PRIMARY_MARKERS = {
     "Cocaïne":      "BE.1",
     "Crack":            "AEME.2",
-    "Héroïne":          "6MAM.1",
+    "Héroïne":          "MOR.1",
     "Méthadone":        "EDDP.1",
     "MDMA":             "MDMA.1",
     "Amphétamine":      "AMPH.2",
