@@ -23,6 +23,15 @@ from gdrive_loader import load_excel_from_drive
 import streamlit.components.v1 as components
 
 # ----------------------
+# CONFIGURATION DE PAGE
+# ----------------------
+# Force la sidebar à s'ouvrir sur cette page (workaround pour un bug
+# connu de Streamlit en multi-pages : initial_sidebar_state défini dans
+# app.py n'est pas toujours respecté après navigation).
+# Voir : https://github.com/streamlit/streamlit/issues/12065
+st.set_page_config(initial_sidebar_state="expanded")
+
+# ----------------------
 # FICHIERS DE DONNÉES
 # ----------------------
 # IDs Google Drive des fichiers de données
@@ -175,7 +184,7 @@ def build_city_color_map(df: pd.DataFrame, color_palette: list) -> dict:
 RELATED_ANALYTES = {
     "Amphétamine": ["AMPH.2"],
     "Anabasine": ["ANBS.2"],
-    "Cocaïne HCL": ["BE.1", "COC.1", "COE.1"],
+    "Cocaïne": ["BE.1", "COC.1", "COE.1"],
     "Crack": ["BE.1", "COC.1", "AEME.2"],
     "Héroïne": ["6MAM.1", "HER.1", "MOR.1"],
     "Kétamine": ["KET.1"],
@@ -190,61 +199,61 @@ RELATED_ANALYTES = {
 # ----------------------
 STUP_DESCRIPTIONS = {
     "Amphétamine": {
-        "description": "Stimulant du système nerveux central. L'amphétamine est souvent consommée sous forme de sulfate d'amphétamine.",
+        "description": "L'amphétamine est un stimulant sous forme de poudre ou de pâte, majoritairement sniffée. Le marqueur utilisé dans les eaux usées est l'amphétamine elle-même, excrétée en partie inchangée par l'organisme.",
         "parent": "Amphétamine (AMPH)",
-        "metabolites": "AMPH.2 (amphétamine urinaire)",
-        "note": "L'amphétamine peut aussi être un métabolite de la méthamphétamine."
+        "metabolites": "-",
+        "note": "ATTENTION : L'amphétamine est également un métabolite de la méthamphétamine."
     },
     "Anabasine": {
-        "description": "Alcaloïde présent dans le tabac. Marqueur de consommation de tabac non transformé.",
+        "description": "L'anabasine est un alcaloïde présent dans le tabac, mais absent des produits à base de nicotine pure (substituts nicotiniques, e-cigarettes). Elle est donc utilisée comme marqueur spécifique de la consommation de tabac.",
         "parent": "Anabasine (ANBS)",
-        "metabolites": "ANBS.2",
-        "note": "Utilisé comme biomarqueur de consommation de tabac."
+        "metabolites": "-",
+        "note": ""
     },
-    "Cocaïne HCL": {
-        "description": "Forme chlorhydrate de la cocaïne, consommée par voie nasale ou injectable.",
-        "parent": "Cocaïne (COC.1)",
-        "metabolites": "Benzoylecgonine (BE.1), Cocaéthylène (COE.1 - co-consommation avec alcool)",
-        "note": "Le ratio BE/COC peut indiquer le mode de consommation."
+    "Cocaïne": {
+        "description": "La cocaïne est un stimulant extrait des feuilles de coca. Sous forme de poudre, elle est sniffée ou injectée. Son principal métabolite, la benzoylecgonine, est le marqueur utilisé pour mesurer la consommation totale de cocaïne dans les eaux usées.",
+        "parent": "Cocaïne (COC)",
+        "metabolites": "Benzoylecgonine (BE)",
+        "note": ""
     },
     "Crack": {
-        "description": "Forme base libre de la cocaïne, consommée par inhalation/fumée.",
-        "parent": "Cocaïne (COC.1)",
-        "metabolites": "Benzoylecgonine (BE.1), Anhydroecgonine méthyl ester (AEME.2 - marqueur spécifique de pyrolyse)",
-        "note": "L'AEME est un marqueur spécifique de la consommation par fumée (crack)."
+        "description": "Le crack est une forme alternative de la cocaïne. Au lieu de se présenter sous forme de poudre, il a l'apparence de petits cailloux et se consomme en étant fumé. Cette manière particulière de le consommer laisse une trace chimique spécifique dans les eaux usées : l'anhydroecgonine méthyl ester (AEME), qui permet de distinguer la consommation de crack de celle de la cocaïne classique. .",
+        "parent": "Cocaïne (COC)",
+        "metabolites": "Anhydroecgonine méthyl ester (AEME)",
+        "note": ""
     },
     "Héroïne": {
-        "description": "Opiacé semi-synthétique dérivé de la morphine. Forte dépendance physique.",
-        "parent": "Héroïne (HER.1, diacétylmorphine)",
-        "metabolites": "6-Monoacétylmorphine (6MAM.1 - marqueur spécifique), Morphine (MOR.1)",
-        "note": "Le 6-MAM est le marqueur le plus spécifique de la consommation d'héroïne."
+        "description": "L'héroïne est un opioïde, dérivé de la morphine extraite du pavot. Elle est principalement injectée, sniffée ou fumée. Une fois consommée, elle est métabolisée en morphine, qui est le seul marqueur stable mesurable dans les eaux usées. Ce marqueur ne permet toutefois pas de distinguer l'usage illicite d'héroïne des usages médicaux légaux (morphine, codéine).",
+        "parent": "Héroïne (HER)",
+        "metabolites": "Morphine (MOR)",
+        "note": "Le 6-MAM (6-Monoacétylmorphin) est le marqueur le plus spécifique de la consommation d'héroïne."
     },
     "Kétamine": {
-        "description": "Anesthésique dissociatif utilisé de manière récréative pour ses effets hallucinogènes.",
-        "parent": "Kétamine (KET.1)",
-        "metabolites": "Norkétamine (non mesuré dans ce dataset)",
-        "note": "Tendance à la hausse dans plusieurs pays européens."
+        "description": "La kétamine est un anesthésique dissociatif, utilisé en médecine mais aussi détourné comme drogue récréative. Sous sa forme récréative, elle se présente sous forme de poudre blanche, principalement sniffée. Le marqueur utilisé dans les eaux usées est la kétamine elle-même, excrétée en partie inchangée par l'organisme.",
+        "parent": "Kétamine (KET)",
+        "metabolites": "-",
+        "note": ""
     },
     "Méthadone": {
-        "description": "Opioïde synthétique utilisé en traitement de substitution aux opiacés (TSO).",
-        "parent": "Méthadone (Methadone.1)",
-        "metabolites": "EDDP (EDDP.1 - métabolite principal)",
-        "note": "Indicateur de traitements de substitution plutôt que d'usage récréatif."
+        "description": "La méthadone est un opioïde synthétique utilisé en Suisse comme traitement de substitution pour les personnes dépendantes aux opiacés. Elle est administrée sous prescription médicale. Le marqueur utilisé dans les eaux usées est son métabolite EDDP",
+        "parent": "Méthadone",
+        "metabolites": "EDDP (EDDP)",
+        "note": ""
     },
     "Méthamphétamine": {
-        "description": "Stimulant puissant du système nerveux central, très addictif.",
-        "parent": "Méthamphétamine (Methamphetamine.1)",
-        "metabolites": "Amphétamine (métabolite, ~10-20% de la dose)",
-        "note": "Prévalence variable selon les régions (plus élevée en Europe de l'Est et Asie)."
+        "description": "La méthamphétamine est un stimulant puissant, dérivé de l'amphétamine, aux effets plus intenses et plus durables. Elle se présente sous forme de poudre ou de cristaux (« crystal meth ») et peut être sniffée, fumée, injectée ou ingérée. Le marqueur utilisé dans les eaux usées est la méthamphétamine elle-même, excrétée en partie inchangée par l'organisme.",
+        "parent": "Méthamphétamine",
+        "metabolites": "Amphétamine (AMPH)",
+        "note": ""
     },
     "MDMA": {
-        "description": "Ecstasy/MDMA - Entactogène-stimulant, consommé principalement en contexte festif.",
-        "parent": "MDMA (MDMA.1)",
-        "metabolites": "HMMA (HMMA.1 - 4-hydroxy-3-méthoxyméthamphétamine)",
+        "description": "La MDMA, plus connue sous le nom d'« ecstasy », est un stimulant entactogène. Elle se présente sous forme de comprimés ou de poudre/cristaux et est majoritairement ingérée. Le marqueur utilisé dans les eaux usées est la MDMA elle-même, excrétée en partie inchangée par l'organisme. ",
+        "parent": "MDMA",
+        "metabolites": "HMMA (4-hydroxy-3-méthoxyméthamphétamine)",
         "note": "Pics de consommation souvent observés les week-ends et lors d'événements festifs."
     },
     "THC": {
-        "description": "Principal composé psychoactif du cannabis (tétrahydrocannabinol).",
+        "description": "Le THC est la principale substance psychoactive du cannabis. Il est consommé sous forme d'herbe ou de résine, très majoritairement fumée. Son principal métabolite, le THC-COOH, est le marqueur utilisé dans les eaux usées. ",
         "parent": "THC",
         "metabolites": "THC-COOH (THCCOOH.2 - métabolite urinaire principal)",
         "note": "Substance illicite la plus consommée. Le THC-COOH est le seul marqueur fiable dans les eaux usées."
@@ -392,7 +401,7 @@ def compute_weighted_mean_by_quarter(df_agg: pd.DataFrame) -> pd.DataFrame:
 # les autres analytes sont dans des sous-expanders informatifs.
 # ----------------------
 PRIMARY_MARKERS = {
-    "Cocaïne HCL":      "BE.1",
+    "Cocaïne":      "BE.1",
     "Crack":            "AEME.2",
     "Héroïne":          "6MAM.1",
     "Méthadone":        "EDDP.1",
@@ -416,7 +425,7 @@ ANALYTE_OVERRIDES = {
 }
 
 ANALYTE_CLASS = {
-    "Cocaine": "parent", "Cocaïne": "parent", "Cocaïne HCL": "parent",
+    "Cocaine": "parent", "Cocaïne": "parent", "Cocaïne": "parent",
     "Benzoylecgonine": "metabolite", "BE": "metabolite",
     "MDMA": "parent", "MDA": "metabolite", "HMMA": "metabolite",
     "Amphetamine": "parent", "Methamphetamine": "parent",
@@ -445,6 +454,14 @@ st.markdown("""
 .main .block-container {
     padding-top: 1.5rem;
     padding-bottom: 2rem;
+}
+
+/* === MENU DE NAVIGATION (sidebar) — Agrandir icônes et texte === */
+[data-testid="stSidebarNav"] a span:first-child {
+    font-size: 1.5rem !important;  /* Icône (≈ 24px) */
+}
+[data-testid="stSidebarNav"] a span:last-child {
+    font-size: 1.15rem !important;  /* Texte (≈ 18px) */
 }
 
 /* Header */
@@ -824,14 +841,31 @@ st.markdown("""
     background: #f4f7fb !important;
     border: 2px solid #0f4c81 !important;
     border-radius: 10px !important;
-    font-size: 1.15rem !important;
-    min-height: 3rem !important;
-    padding: 0.3rem 0.5rem !important;
+    font-size: 1.25rem !important;
+    min-height: 3.5rem !important;
+    padding: 0.4rem 0.85rem !important;
+    display: flex !important;
+    align-items: center !important;
     transition: background 0.2s ease;
+}
+
+/* === CHECKBOXES — Texte agrandi pour cohérence avec le reste === */
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] label p,
+[data-testid="stCheckbox"] label div,
+[data-testid="stCheckbox"] label span {
+    font-size: 1.25rem !important;  /* ≈ 20px */
 }
 
 [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover {
     background: #e8eef4 !important;
+}
+
+/* === RADIO BUTTONS — Texte agrandi pour cohérence === */
+[data-testid="stRadio"] label p,
+[data-testid="stRadio"] label div,
+[data-testid="stRadio"] label span {
+    font-size: 1.25rem !important;  /* ≈ 20px */
 }
 
 /* Menu déroulant des options */
@@ -846,6 +880,8 @@ st.markdown("""
 # ----------------------
 # HELPER FUNCTIONS
 # ----------------------
+
+
 def _norm(s: str) -> str:
     if not isinstance(s, str):
         return ""
@@ -891,6 +927,34 @@ def analyte_full_name_only(abbrev: str) -> str:
     Utilisé pour les titres en pleine page (ex. "Benzoylecgonine — marqueur principal").
     """
     return ANALYTE_FULL_NAMES.get(abbrev, abbrev)
+
+def de_d_apostrophe(name: str) -> str:
+    """
+    Retourne la liaison française appropriée ("d'" ou "de ") selon que le mot
+    commence par une voyelle/h muet ou par une consonne.
+
+    Utilisé pour formater dynamiquement les titres de graphiques.
+
+    Exemples:
+        de_d_apostrophe("Amphétamine")     → "d\u2019"
+        de_d_apostrophe("Benzoylecgonine") → "de "
+        de_d_apostrophe("Héroïne")         → "d\u2019" (h muet)
+        de_d_apostrophe("MDMA")            → "de "
+
+    Note : tous les "h" sont traités comme muets — c'est le cas pour tous
+    les analytes de notre dataset (héroïne, hydroxycocaïne, etc.).
+    L'apostrophe utilisée est l'apostrophe typographique (U+2019, "'"),
+    pas l'apostrophe droite ASCII (U+0027, "'").
+    """
+    if not name:
+        return "de "
+
+    first = name.strip()[0].lower()
+    voyelles_et_h = set("aàâäeéèêëiîïoôöuùûüyh")
+
+    if first in voyelles_et_h:
+        return "d\u2019"  # apostrophe typographique
+    return "de "
 
 def _fmt_d(d) -> str:
     if pd.isna(d):
@@ -1179,7 +1243,7 @@ def build_quarterly_purity(df_mkt: pd.DataFrame,
     HER_BASE = "Héroïne (Base)"
 
     ui = str(selected_stup).strip()
-    if ui == "Cocaïne HCL":
+    if ui == "Cocaïne":
         target = COC_SEL
     elif ui == "Crack":
         target = COC_BASE
@@ -2221,8 +2285,6 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
         ville_order = list(medians.index)
         y_max_zoom = _compute_zoom_ymax(sub)
 
-        st.markdown(f"##### Analyte : {analyte}")
-
         col_map, col_box = st.columns([1, 1.3], gap="large")
 
         with col_map:
@@ -2230,7 +2292,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
             render_city_bubble_map_concentration(
                 sub,
                 value_col="y",
-                title=f"Charges médianes — {analyte}",
+                title="",
                 units="mg/j/1000 hab.",
                 basemap_style="carto-positron",
                 zoom=6.2,
@@ -2304,7 +2366,6 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
                 ))
 
             fig.update_layout(
-                title=f"Comparaison — {analyte}",
                 xaxis_title="Ville",
                 yaxis_title="Charge (mg/jour/1000 habitants)",
                 xaxis=dict(categoryorder="array", categoryarray=ville_order, tickangle=-45),
@@ -2443,7 +2504,6 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_
             ))
 
         fig.update_layout(
-            title=f"Comparaison par ville — {analyte}",
             xaxis_title="Ville",
             yaxis_title="Charge (mg/jour/1000 habitants)",
             xaxis=dict(categoryorder="array", categoryarray=ville_order, tickangle=-45),
@@ -2502,24 +2562,70 @@ with st.sidebar:
         selected_projects = ["ChaMalEaux", "DroMedARio"]
 
     st.markdown("### 📅 Période")
-    min_d, max_d = df_wbe["date"].min().date(), df_wbe["date"].max().date()
-    period = st.date_input("", value=(min_d, max_d), min_value=min_d, max_value=max_d, label_visibility="collapsed")
-    start_d, end_d = period if isinstance(period, tuple) and len(period) == 2 else (min_d, max_d)
 
-    st.markdown("---")
+    # Liste de tous les trimestres présents dans les données.
+    all_quarters_sorted = sorted(
+        pd.to_datetime(df_wbe["date"]).dt.to_period("Q").dropna().unique()
+    )
 
-    st.markdown("### 🔧 Options d'affichage")
-    show_trend = st.checkbox("📈 Afficher tendances", key="show_trend")
-    normalize = st.checkbox("⚖️ Normaliser par pureté", key="normalize")
+    # Filtrage des trimestres autorisés selon le rôle :
+    # - Reader (STEPs) : trimestres >= T1 2021 (consigne projet)
+    # - Admin           : tous les trimestres disponibles
+    is_admin = st.session_state.get("is_admin", False)
 
-    st.markdown("---")
+    if is_admin:
+        allowed_quarters = all_quarters_sorted
+    else:
+        min_allowed = pd.Period(year=2021, quarter=1, freq="Q")
+        allowed_quarters = [q for q in all_quarters_sorted if q >= min_allowed]
 
-    st.markdown("### ℹ️ Traitement des données")
-    st.markdown(f"""
-    - **<LOD** : remplacé par {LOD_REPLACEMENT_VALUE} ng/L
-    - **<LOQ** : remplacé par {LOQ_REPLACEMENT_VALUE} ng/L
-    - **Outliers** : exclus des statistiques
-    """)
+    if not allowed_quarters:
+        st.error("Aucun trimestre disponible pour votre rôle.")
+        st.stop()
+
+    quarter_labels = [f"T{q.quarter} {q.year}" for q in allowed_quarters]
+
+    # Trimestre par défaut pour la poignée gauche : T1 2025 (début du projet
+    # ChaMalEaux). Fallback : premier trimestre disponible >= T1 2025, sinon
+    # le tout dernier disponible (cas où le dataset s'arrêterait avant 2025).
+    default_start_period = pd.Period(year=2021, quarter=1, freq="Q")
+    candidates_after_default = [q for q in allowed_quarters if q >= default_start_period]
+    if candidates_after_default:
+        first = candidates_after_default[0]
+        default_start_label = f"T{first.quarter} {first.year}"
+    else:
+        default_start_label = quarter_labels[-1]
+
+    # Slider à 2 poignées : début + fin de la plage
+    selected_range = st.select_slider(
+        label="Plage de trimestres",
+        options=quarter_labels,
+        value=(default_start_label, quarter_labels[-1]),
+        label_visibility="collapsed",
+    )
+
+
+    # Conversion "T1 2021" -> pd.Period -> date pour le filtrage en aval
+    def _quarter_label_to_period(label: str) -> pd.Period:
+        t_str, year_str = label.split(" ")
+        return pd.Period(year=int(year_str), quarter=int(t_str[1]), freq="Q")
+
+
+    start_period = _quarter_label_to_period(selected_range[0])
+    end_period = _quarter_label_to_period(selected_range[1])
+
+    start_d = start_period.start_time.date()
+    end_d = end_period.end_time.date()
+
+    # Note informative sur les périodes des projets
+    st.markdown(
+        '<div style="font-size: 0.9rem; color: #555; margin-top: 0.75rem; line-height: 1.6;">'
+        'ℹ️ <strong>DroMedARio</strong> : T1 2021 — T4 2024<br>'
+        '<span style="margin-left: 1.4rem;"></span>'
+        '<strong>ChaMalEaux</strong> : T1 2025 — aujourd\'hui'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 # ----------------------
 # DATA PREPARATION (CACHED)
@@ -2654,6 +2760,17 @@ else:
 #         with cols[i % len(cols)]:
 #             st.markdown(f'<span style="color:{color}; font-weight:bold;">● {city}</span>', unsafe_allow_html=True)
 
+
+# ----------------------
+# VALEURS PAR DÉFAUT DES OPTIONS D'AFFICHAGE
+# ----------------------
+# Ces variables sont réassignées dans la vue "Ma STEP" via les checkboxes
+# placées à côté du résumé du stupéfiant. En mode "Comparaison", elles
+# restent à False (option choisie : pas de normalisation/tendances dans la
+# vue Comparaison, voir aussi les appels hardcodés plus bas).
+show_trend = False
+normalize = False
+
 # ----------------------
 # TABS - Villes
 # ----------------------
@@ -2707,52 +2824,52 @@ with tabs[1]:
         if not available_stups:
             st.warning("Aucun stupéfiant disponible pour ces villes.")
         else:
-            # Barre de filtres en 2 colonnes : Mode | Stupéfiant
-            col_mode, col_stup = st.columns(2)
-
-            with col_mode:
-                st.markdown("""
-        <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
-                    border: 2px solid #0f4c81;
-                    border-radius: 10px;
-                    padding: 0.85rem 1.25rem;
-                    margin: 1rem 0 0.25rem 0;
-                    font-size: 1.2rem;
-                    font-weight: 600;
-                    color: #0f4c81;">
-            📊 Mode de visualisation
-        </div>
-        """, unsafe_allow_html=True)
-
-                comparison_mode = st.selectbox(
-                    label="Mode",
-                    options=[
-                        "📈 Tendances temporelles",
-                        "🗺️ Carte géographique",
-                        "📦 Boxplots uniquement (couleur = ville)"
-                    ],
-                    key="comparison_mode",
-                    label_visibility="collapsed",
-                )
+            # Barre de filtres en 2 colonnes : Stupéfiant | Mode
+            col_stup, col_mode = st.columns(2)
 
             with col_stup:
                 st.markdown("""
-        <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
-                    border: 2px solid #0f4c81;
-                    border-radius: 10px;
-                    padding: 0.85rem 1.25rem;
-                    margin: 1rem 0 0.25rem 0;
-                    font-size: 1.2rem;
-                    font-weight: 600;
-                    color: #0f4c81;">
-            🧪 Stupéfiant à visualiser
-        </div>
-        """, unsafe_allow_html=True)
+                    <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                                border: 2px solid #0f4c81;
+                                border-radius: 10px;
+                                padding: 0.85rem 1.25rem;
+                                margin: 1rem 0 0.25rem 0;
+                                font-size: 1.2rem;
+                                font-weight: 600;
+                                color: #0f4c81;">
+                        🧪 Stupéfiant à visualiser
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 selected_stup = st.selectbox(
                     label="Stupéfiant",
                     options=sorted(available_stups),
                     key="comparison_selected_stup",
+                    label_visibility="collapsed",
+                )
+
+            with col_mode:
+                st.markdown("""
+                    <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                                border: 2px solid #0f4c81;
+                                border-radius: 10px;
+                                padding: 0.85rem 1.25rem;
+                                margin: 1rem 0 0.25rem 0;
+                                font-size: 1.2rem;
+                                font-weight: 600;
+                                color: #0f4c81;">
+                        📊 Mode de visualisation
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                comparison_mode = st.radio(
+                    label="Mode",
+                    options=[
+                        "📈 Tendances temporelles",
+                        "🗺️ Carte géographique",
+                        "📦 Comparaison des villes"
+                    ],
+                    key="comparison_mode_v2",
                     label_visibility="collapsed",
                 )
 
@@ -2780,7 +2897,7 @@ with tabs[1]:
                     st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
                 else:
                     primary_name = analyte_full_name_only(primary)
-                    st.markdown(f"### 🎯 {primary_name}")
+                    st.markdown(f"### 🎯 Marqueur -  {primary_name}")
                     render_stup_panel_header(selected_stup, n_points)
 
                     # Tableau récap — commenté pour le moment (à réactiver plus tard si besoin)
@@ -2800,6 +2917,10 @@ with tabs[1]:
                             f"sont en dessous de la limite de détection."
                         )
                     else:
+                        liaison = de_d_apostrophe(primary_name)
+                        st.markdown(
+                            f"### Comparaison entre villes des charges {liaison}{primary_name}"
+                        )
                         render_comparison_with_map(
                             df_primary, selected_stup,
                             key_prefix=f"all_carte_{selected_stup}_{primary}_",
@@ -2828,7 +2949,7 @@ with tabs[1]:
                     st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
                 else:
                     primary_name = analyte_full_name_only(primary)
-                    st.markdown(f"### 🎯 {primary_name}")
+                    st.markdown(f"### 🎯 Marqueur -  {primary_name}")
                     render_stup_panel_header(selected_stup, n_points)
 
                     df_primary = df_stup[df_stup["composes"] == primary].copy()
@@ -2845,14 +2966,23 @@ with tabs[1]:
                             f"sont en dessous de la limite de détection."
                         )
                     else:
+                        liaison = de_d_apostrophe(primary_name)
                         if "Tendances" in comparison_mode:
+                            st.markdown(
+                                f"### Évolution dans le temps des charges {liaison}{primary_name} "
+                                f"dans les eaux usées"
+                            )
                             render_timeseries_chart(
-                                df_primary, show_trend, normalize, df_mkt, start_d, end_d,
+                                df_primary, False, False, df_mkt, start_d, end_d,
                                 selected_stup, key_prefix=f"all_{selected_stup}_{primary}_",
                                 is_comparison=True,
                                 highlight_city=selected_step,
                             )
                         else:  # Boxplots uniquement
+                            st.markdown(
+                                f"### Comparaison des charges médianes {liaison}{primary_name} "
+                                f"entre les villes"
+                            )
                             render_comparison_boxplot_only(
                                 df_primary, selected_stup,
                                 key_prefix=f"all_{selected_stup}_{primary}_",
@@ -2862,7 +2992,7 @@ with tabs[1]:
 
 
 # ----------------------
-# TABS: Par ville
+# TABS: Ma STEP
 # ----------------------
     with tabs[0]:
         city = selected_step
@@ -2871,23 +3001,6 @@ with tabs[1]:
         if df_city.empty:
             st.warning(f"Aucune donnée pour **{city}**.")
         else:
-            n_points_total = len(df_city.dropna(subset=["y"]))
-            date_range = f"{_fmt_d(df_city['date'].min())} — {_fmt_d(df_city['date'].max())}"
-
-            st.markdown(f"""
-            <div class="kpi-container">
-                <div class="kpi-card">
-                    <div class="kpi-label">📊 Points de données</div>
-                    <div class="kpi-value">{n_points_total:,}</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">📅 Période</div>
-                    <div class="kpi-value" style="font-size: 1rem;">{date_range}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            st.markdown("---")
 
             available_stups = get_available_stups(df_city)
 
@@ -2935,8 +3048,33 @@ with tabs[1]:
                         st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
                     else:
                         primary_name = analyte_full_name_only(primary)
-                        st.markdown(f"### 🎯 {primary_name}")
-                        render_stup_panel_header(selected_stup, n_points)
+                        st.markdown(f"### 🎯 Marqueur -  {primary_name}")
+
+                        # Layout : résumé du stup | barre verticale | options d'affichage
+                        col_summary, col_sep, col_options = st.columns([2, 0.05, 1])
+                        with col_summary:
+                            render_stup_panel_header(selected_stup, n_points)
+                        with col_sep:
+                            st.markdown(
+                                '<div style="border-left: 2px solid #c5d4e3; '
+                                'height: 100%; min-height: 180px;"></div>',
+                                unsafe_allow_html=True,
+                            )
+                        with col_options:
+                            st.markdown(
+                                '<div style="font-size: 1.25rem; font-weight: 600; '
+                                'color: #0f4c81; margin-bottom: 0.5rem;">'
+                                '🔧 Options d\'affichage</div>',
+                                unsafe_allow_html=True,
+                            )
+                            show_trend = st.checkbox(
+                                "📈 Afficher tendances",
+                                key=f"show_trend_{city}_{primary}",
+                            )
+                            normalize = st.checkbox(
+                                "⚖️ Normaliser par pureté",
+                                key=f"normalize_{city}_{primary}",
+                            )
 
                         df_primary = df_stup[df_stup["composes"] == primary].copy()
                         df_primary = aggregate_by_quarter(df_primary)
@@ -2952,6 +3090,12 @@ with tabs[1]:
                                 f"sont en dessous de la limite de détection."
                             )
                         else:
+                            # Titre du graphique
+                            liaison = de_d_apostrophe(primary_name)
+                            st.markdown(
+                                f"### Évolution dans le temps des charges {liaison}{primary_name} "
+                                f"dans les eaux usées de {city}"
+                            )
                             render_timeseries_chart(
                                 df_primary, show_trend, normalize, df_mkt, start_d, end_d,
                                 selected_stup, key_prefix=f"{city}_{selected_stup}_{primary}_",
