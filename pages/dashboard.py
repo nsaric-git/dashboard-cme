@@ -2396,6 +2396,202 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
             st.markdown("---")
         render_detailed_data_table(df_view, key_prefix=key_prefix)
 
+# Stupéfiants pour lesquels l'onglet "Ma STEP" affiche le graphe combiné
+# (charge normalisée + charge normalisée par la pureté, avec leurs deux
+# tendances de Sen), toujours visible. Ce sont les seuls pour lesquels une
+# pureté de marché est disponible dans les données.
+COMBINED_NORM_STUPS = {"Amphétamine", "Cocaïne", "Crack", "MDMA", "THC"}
+
+
+def _sen_trend_segment(dsub, y_col):
+    """
+    Calcule le segment de tendance de Theil-Sen pour une série (date, y_col).
+    Reprend EXACTEMENT les conventions de _add_trendlines : x = ordinal des
+    dates, pente annualisée (× 365.25), libellé directionnel 📈/📉/➡️ basé sur
+    la médiane du niveau, et chaîne de pente formatée pour le tooltip.
+
+    Retourne (x_seg, y_seg, direction, slope_str), ou None s'il n'existe pas
+    au moins deux points distincts en x.
+    """
+    d = dsub.dropna(subset=[y_col, "date"])
+    if len(d) < 2:
+        return None
+    xnum = d["date"].dt.date.map(_dt.date.toordinal).astype(float).to_numpy()
+    ynum = pd.to_numeric(d[y_col], errors="coerce").to_numpy()
+    mask = np.isfinite(xnum) & np.isfinite(ynum)
+    xnum, ynum = xnum[mask], ynum[mask]
+    if xnum.size < 2:
+        return None
+    slope, intercept = _theil_sen_fit(xnum, ynum)
+    if not np.isfinite(slope):
+        return None
+    x0, x1 = xnum.min(), xnum.max()
+    y0, y1 = slope * x0 + intercept, slope * x1 + intercept
+    d0 = pd.to_datetime([_dt.date.fromordinal(int(x0))])[0]
+    d1 = pd.to_datetime([_dt.date.fromordinal(int(x1))])[0]
+    slope_per_year = slope * 365.25
+    med = float(np.nanmedian(ynum)) if np.isfinite(ynum).any() else np.nan
+    direction = _trend_direction_label(slope_per_year, med)
+    slope_str = f"{slope_per_year:+.1f} mg/j/1000 hab. par an"
+    return [d0, d1], [y0, y1], direction, slope_str
+
+
+def render_timeseries_combined(df_primary, df_mkt, start_d, end_d,
+                               stup_name, primary_name, city, key_prefix=""):
+    """
+    Graphe combiné de l'onglet "Ma STEP" pour les 5 stupéfiants à pureté
+    disponible (COMBINED_NORM_STUPS). Sur un AXE Y UNIQUE et toujours
+    affichées :
+      - la charge normalisée (débit + population, unité SCORE/EUDA) ;
+      - la charge normalisée par la pureté (débit + population + pureté) ;
+      - leurs deux tendances de Theil-Sen (pointillés, mêmes couleurs).
+
+    La courbe "par la pureté" est mécaniquement au-dessus de l'autre (division
+    par une pureté < 100 %) : seules les FORMES/TENDANCES sont comparables, pas
+    les niveaux. En dessous : le graphe de pureté trimestrielle utilisée.
+    """
+    COLOR_CHARGE = "#0f4c81"   # bleu — charge normalisée (débit + population)
+    COLOR_PURITY = "#e76f51"   # orange — normalisée en plus par la pureté
+
+    if df_primary.empty:
+        st.info("Aucune donnée à afficher pour ce stupéfiant.")
+        return
+
+    df_raw = df_primary.dropna(subset=["y"]).sort_values("date").copy()
+    if df_raw.empty:
+        st.info("Aucune mesure disponible pour ce stupéfiant.")
+        return
+
+    # Abréviation du marqueur (ex. "AMPH.2" -> "AMPH") pour préfixer la légende,
+    # comme dans les autres graphes du dashboard (_strip_marker_suffix_in_legend).
+    marker_abbr = ""
+    if "composes" in df_raw.columns and not df_raw["composes"].dropna().empty:
+        marker_abbr = re.sub(r"\.\d+\b", "", str(df_raw["composes"].dropna().iloc[0]))
+    prefix = f"{marker_abbr} — " if marker_abbr else ""
+
+    # --- Série normalisée par la pureté (même logique que render_timeseries_chart) ---
+    df_norm = df_primary.copy()
+    df_norm["quarter"] = df_norm["date"].dt.to_period("Q")
+    pur_q = build_quarterly_purity(df_mkt, stup_name, start_d, end_d)
+
+    df_norm_plot = pd.DataFrame()
+    if not pur_q.empty:
+        df_norm = df_norm.merge(pur_q, on="quarter", how="left")
+        df_norm["y_norm"] = np.where(
+            df_norm["pur_median_q"].notna() & (df_norm["pur_median_q"] > 0),
+            df_norm["y"] / (df_norm["pur_median_q"] / 100.0),
+            np.nan
+        )
+        df_norm_plot = df_norm.dropna(subset=["y_norm"]).sort_values("date").copy()
+
+    fig = go.Figure()
+
+    # Trace 1 : charge normalisée (débit + population)
+    fig.add_trace(go.Scatter(
+        x=df_raw["date"], y=df_raw["y"],
+        mode="lines+markers", name=f"{prefix}Charge normalisée",
+        legendgroup="charge", legendrank=3,
+        line=dict(color=COLOR_CHARGE, width=2),
+        marker=dict(size=6, color=COLOR_CHARGE),
+        connectgaps=True,
+        hovertemplate=(
+            "<b>Charge normalisée</b><br>"
+            "Date : %{x|%b %Y}<br>"
+            "Charge : %{y:.2f} mg/j/1000 hab.<extra></extra>"
+        ),
+    ))
+
+    # Trace 2 : charge normalisée par la pureté
+    if not df_norm_plot.empty:
+        fig.add_trace(go.Scatter(
+            x=df_norm_plot["date"], y=df_norm_plot["y_norm"],
+            mode="lines+markers", name=f"{prefix}Charge normalisée par la pureté",
+            legendgroup="charge_pur", legendrank=1,
+            line=dict(color=COLOR_PURITY, width=2),
+            marker=dict(size=6, color=COLOR_PURITY),
+            connectgaps=True,
+            hovertemplate=(
+                "<b>Charge normalisée par la pureté</b><br>"
+                "Date : %{x|%b %Y}<br>"
+                "Charge : %{y:.2f} mg/j/1000 hab.<extra></extra>"
+            ),
+        ))
+
+        # Trace 3 : tendance de Sen sur la charge normalisée
+        seg = _sen_trend_segment(df_raw, "y")
+        if seg is not None:
+            xs, ys, direction, slope_str = seg
+            fig.add_trace(go.Scatter(
+                x=xs, y=ys, mode="lines",
+                name=f"{prefix}Charge normalisée — tendance {direction}",
+                legendgroup="charge", legendrank=4,
+                line=dict(color=COLOR_CHARGE, width=2.5, dash="dash"),
+                hovertemplate=f"Tendance (Sen) : {slope_str}<extra></extra>",
+            ))
+
+        # Trace 4 : tendance de Sen sur la charge normalisée par la pureté
+        if not df_norm_plot.empty:
+            seg = _sen_trend_segment(df_norm_plot, "y_norm")
+            if seg is not None:
+                xs, ys, direction, slope_str = seg
+                fig.add_trace(go.Scatter(
+                    x=xs, y=ys, mode="lines",
+                    name=f"{prefix}Charge normalisée par la pureté — tendance {direction}",
+                    legendgroup="charge_pur", legendrank=2,
+                    line=dict(color=COLOR_PURITY, width=2.5, dash="dash"),
+                    hovertemplate=f"Tendance (Sen) : {slope_str}<extra></extra>",
+                ))
+
+        _adapt_xaxis(fig, df_raw["date"])
+        fig.update_layout(
+            plot_bgcolor="white", paper_bgcolor="white",
+            xaxis=dict(gridcolor="#f0f0f0", title="Date"),
+            yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero",
+                       title="Charge (mg/j/1000 hab.)"),
+            hovermode="closest",
+            height=550,
+        )
+        style_legend(fig)
+        st.plotly_chart(fig, width='stretch', key=f"{key_prefix}chart_combined")
+        st.markdown(
+            f'<div class="chart-footnote">{figure_footnote(df_raw, "y")}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if pur_q.empty or df_norm_plot.empty:
+            st.warning(
+                "⚠️ Pas de pureté disponible pour ces trimestres : seule la charge "
+                "normalisée (débit + population) est affichée."
+            )
+
+        # --- Graphe de pureté trimestrielle utilisée (en dessous) ---
+        if not pur_q.empty:
+            st.markdown("**📉 Pureté trimestrielle utilisée**")
+            pur_q_plot = pur_q.sort_values("quarter").copy()
+            pur_q_plot["date_mid"] = pur_q_plot["quarter"].dt.to_timestamp(how="end") - pd.offsets.Day(45)
+
+            fig3 = px.line(pur_q_plot, x="date_mid", y="pur_median_q", markers=True)
+            fig3.update_traces(line_color="#e63946", line_width=2, marker_size=8)
+            fig3.update_yaxes(range=[0, 100], title="Pureté médiane (%)")
+            fig3.update_xaxes(title="")
+            fig3.update_layout(
+                plot_bgcolor="white", height=300,
+                margin=dict(l=20, r=20, t=20, b=40)
+            )
+            st.plotly_chart(fig3, width='stretch', key=f"{key_prefix}chart_purity")
+
+            if stup_name in {"MDMA", "THC"}:
+                st.caption(
+                    f"ℹ️ La pureté trimestrielle pour {stup_name} est une moyenne pondérée "
+                    "des différentes formes disponibles sur le marché."
+                )
+
+        # --- Données détaillées ---
+        with st.expander("📋 Données détaillées (avec normalisation)"):
+            render_chart_footnote_table(df_norm, key_prefix=f"{key_prefix}comb_")
+            st.markdown("---")
+            render_detailed_data_table(df_norm, key_prefix=f"{key_prefix}comb_")
+
 def render_map_city_table(df_analyte: pd.DataFrame):
     """
     Tableau récap par ville pour la carte : Ville, Population, Charge médiane.
@@ -3259,32 +3455,6 @@ with tabs[1]:
                         primary_name = analyte_full_name_only(primary)
                         st.markdown(f"### 🎯 Marqueur -  {primary_name}")
 
-                        # Layout : résumé du stup | barre verticale | options d'affichage
-                        col_summary, col_sep, col_options = st.columns([2, 0.05, 1])
-                        with col_summary:
-                            render_stup_panel_header(selected_stup, n_points)
-                        with col_sep:
-                            st.markdown(
-                                '<div style="border-left: 2px solid #c5d4e3; '
-                                'height: 100%; min-height: 180px;"></div>',
-                                unsafe_allow_html=True,
-                            )
-                        with col_options:
-                            st.markdown(
-                                '<div style="font-size: 1.25rem; font-weight: 600; '
-                                'color: #0f4c81; margin-bottom: 0.5rem;">'
-                                '🔧 Options d\'affichage</div>',
-                                unsafe_allow_html=True,
-                            )
-                            show_trend = st.checkbox(
-                                "📈 Afficher tendances",
-                                key=f"show_trend_{city}_{primary}",
-                            )
-                            normalize = st.checkbox(
-                                "⚖️ Normaliser par pureté",
-                                key=f"normalize_{city}_{primary}",
-                            )
-
                         df_primary = df_stup[df_stup["composes"] == primary].copy()
                         df_primary = aggregate_by_quarter(df_primary)
                         df_primary_used = df_primary.dropna(subset=["y"])
@@ -3307,11 +3477,21 @@ with tabs[1]:
                                 f"### Évolution dans le temps des charges {liaison}{primary_name} "
                                 f"dans les eaux usées de {city}{periode_suffix}"
                             )
-                            render_timeseries_chart(
-                                df_primary, show_trend, normalize, df_mkt, start_d, end_d,
-                                selected_stup, key_prefix=f"{city}_{selected_stup}_{primary}_",
-                                is_comparison=False
-                            )
+                            if selected_stup in COMBINED_NORM_STUPS:
+                                render_timeseries_combined(
+                                    df_primary, df_mkt, start_d, end_d,
+                                    selected_stup, primary_name, city,
+                                    key_prefix=f"{city}_{selected_stup}_{primary}_",
+                                )
+                            else:
+                                # Tendance de Sen toujours affichée, sans
+                                # normalisation par pureté (non disponible pour
+                                # ces stupéfiants).
+                                render_timeseries_chart(
+                                    df_primary, True, False, df_mkt, start_d, end_d,
+                                    selected_stup, key_prefix=f"{city}_{selected_stup}_{primary}_",
+                                    is_comparison=False
+                                )
 
 # ----------------------
 # FOOTER
