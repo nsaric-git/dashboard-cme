@@ -255,7 +255,7 @@ STUP_DESCRIPTIONS = {
     "THC": {
         "description": "Le THC est la principale substance psychoactive du cannabis. Il est consommé sous forme d'herbe ou de résine, très majoritairement fumée. Son principal métabolite, le THC-COOH, est le marqueur utilisé dans les eaux usées. ",
         "parent": "THC",
-        "metabolites": "THC-COOH (THCCOOH.2 - métabolite urinaire principal)",
+        "metabolites": "THC-COOH (THCCOOH)",
         "note": "Substance illicite la plus consommée. Le THC-COOH est le seul marqueur fiable dans les eaux usées."
     },
 }
@@ -716,8 +716,8 @@ st.markdown("""
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid rgba(0, 0, 0, 0.15);
     border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 11px;
+    padding: 12x 16px;
+    font-size: 15px !important;
     color: #333;
     z-index: 1000;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
@@ -729,24 +729,25 @@ st.markdown("""
     text-align: center;
 }
 .map-pop-legend-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 76px auto;   /* colonne fixe pour le cercle → chiffres alignés */
     align-items: center;
-    gap: 8px;
-    margin: 3px 0;
+    gap: 10px;
+    margin: 4px 0;
 }
 .map-pop-circle {
     display: inline-block;
     border-radius: 50%;
     background: rgba(120, 120, 120, 0.4);
     border: 1.5px solid #555;
-    flex-shrink: 0;
+    justify-self: center;   /* centre chaque cercle dans sa colonne */
 }
-/* Tailles cohérentes avec SIZE_MIN_PX=14 / SIZE_MAX_PX=52, courbe √population */
-.map-pop-circle.s-500k { width: 52px; height: 52px; }
-.map-pop-circle.s-250k { width: 41px; height: 41px; }
-.map-pop-circle.s-100k { width: 31px; height: 31px; }
-.map-pop-circle.s-50k  { width: 24px; height: 24px; }
-.map-pop-circle.s-10k  { width: 14px; height: 14px; }
+/* Tailles ×1.4 — cohérentes avec SIZE_MIN_PX=14 / SIZE_MAX_PX=52 */
+.map-pop-circle.s-500k { width: 73px; height: 73px; }
+.map-pop-circle.s-250k { width: 57px; height: 57px; }
+.map-pop-circle.s-100k { width: 43px; height: 43px; }
+.map-pop-circle.s-50k  { width: 35px; height: 35px; }
+.map-pop-circle.s-10k  { width: 20px; height: 20px; }
 
 /* === AGRANDISSEMENT DU TEXTE — Étape 1 (révisée 20px) === */
 
@@ -961,6 +962,37 @@ def _fmt_d(d) -> str:
         return "—"
     return pd.to_datetime(d).strftime("%d.%m.%Y")
 
+def _quarter_fr(period: pd.Period) -> str:
+    """Convertit un trimestre pandas (Period 'Q') en libellé 'AAAA Tn'."""
+    return f"{period.year} T{period.quarter}"
+
+
+def period_label_fr(df: pd.DataFrame, date_col: str = "date", y_col: str = "y") -> str:
+    """
+    Retourne la période couverte par les données, au format 'AAAA Tn à AAAA Tn',
+    pour insertion dans les titres de graphiques.
+
+    La période est basée sur les trimestres effectivement MESURÉS (y non-NaN),
+    pas sur la plage du filtre de dates : si l'utilisateur filtre 2020-2025 mais
+    que les données ne couvrent que 2021 T2 -> 2024 T3, le titre affiche la plage
+    réelle des mesures.
+
+    Retourne '' si aucune donnée exploitable (le titre s'affiche alors sans
+    parenthèses).
+    """
+    if df.empty or date_col not in df.columns:
+        return ""
+    d = df.copy()
+    if y_col in d.columns:
+        d = d[pd.to_numeric(d[y_col], errors="coerce").notna()]
+    dates = pd.to_datetime(d[date_col], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    q_min = dates.min().to_period("Q")
+    q_max = dates.max().to_period("Q")
+    if q_min == q_max:
+        return _quarter_fr(q_min)
+    return f"{_quarter_fr(q_min)} à {_quarter_fr(q_max)}"
 
 def style_legend(fig, size=14):
     fig.update_layout(
@@ -1471,12 +1503,25 @@ def _fetch_cantons_geojson():
         pass
     return None
 
+def _label_lat_offset_deg(radius_px: float, lat_deg: float, zoom: float,
+                          gap_px: float = 4.0) -> float:
+    """
+    Décalage de latitude (en degrés, vers le sud) pour poser un label JUSTE SOUS
+    une bulle de rayon `radius_px`, au zoom MapLibre courant.
+
+    Conversion Web Mercator approximative (MapLibre = tuiles 512 px). `gap_px`
+    ajoute un petit espace entre le bas de la bulle et le label. Plus la bulle
+    est grosse (ou le zoom faible), plus le décalage en degrés est important.
+    """
+    meters_per_px = 156543.03392 * np.cos(np.radians(lat_deg)) / (2 ** (zoom + 1))
+    return (radius_px + gap_px) * meters_per_px / 111320.0
+
 def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
                                          value_col: str = "y",
                                          title: str = "Carte — charges médianes",
                                          units: str = "mg/j/1000 hab.",
                                          key: Optional[str] = None,
-                                         basemap_style: str = "carto-positron",
+                                         basemap_style: str = "carto-positron-nolabels",
                                          zoom: float = 7.2,
                                          height: int = 520,
                                          highlight_city: Optional[str] = None) -> None:
@@ -1515,8 +1560,8 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     #  qu'on la regarde seule ou avec Genève)
     POP_MIN_REF = 10_000
     POP_MAX_REF = 500_000
-    SIZE_MIN_PX = 14
-    SIZE_MAX_PX = 52
+    SIZE_MIN_PX = 20
+    SIZE_MAX_PX = 73
 
     pop_clipped = pd.to_numeric(city_df["pop_median"], errors="coerce").fillna(POP_MIN_REF)
     pop_clipped = pop_clipped.clip(lower=POP_MIN_REF, upper=POP_MAX_REF)
@@ -1555,19 +1600,19 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             # Cadrage Romandie élargie (Jura au nord + Berne à l'est visibles)
             center_lat = 46.85
             center_lon = 6.8
-            auto_zoom = 7.1
+            auto_zoom = 8.0
         else:
             # Au moins une ville alémanique → cadrage Suisse entière
             center_lat = 46.8
             center_lon = 8.2
-            auto_zoom = 6.2
+            auto_zoom = 7.5
 
     fig = go.Figure()
 
     # Halo foncé sous la ville sélectionnée (rendu AVANT la trace principale → en arrière-plan)
     if highlight_city is not None and highlight_city in city_df["ville"].values:
         df_halo = city_df[city_df["ville"] == highlight_city]
-        fig.add_trace(go.Scattermapbox(
+        fig.add_trace(go.Scattermap(
             lat=df_halo["lat"].tolist(),
             lon=df_halo["lon"].tolist(),
             mode="markers",
@@ -1580,10 +1625,10 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             showlegend=False,
         ))
 
-    fig.add_trace(go.Scattermapbox(
+    fig.add_trace(go.Scattermap(
         lat=city_df["lat"].tolist(),
         lon=city_df["lon"].tolist(),
-        mode="markers+text",
+        mode="markers",
         marker=dict(
             size=city_df["marker_size"].tolist(),
             color=city_df["value_median"].tolist(),
@@ -1592,18 +1637,16 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             cmax=val_max,
             opacity=0.88,
             colorbar=dict(
-                title=dict(text=f"Charge<br>({units})", font=dict(size=11)),
-                thickness=14,
-                len=0.45,  # raccourcie (avant : 0.65)
+                title=dict(text=f"Charge<br>({units})", font=dict(size=15)),  # avant : 11
+                thickness=20,  # avant : 14
+                len=0.6,  # avant : 0.45
                 x=1.02,
-                y=0.78,  # ancrée vers le haut de la carte
+                y=0.7,  # avant : 0.78 — recentré, sinon la barre rallongée déborde en haut
                 yanchor="middle",
-                tickfont=dict(size=10),
+                tickfont=dict(size=13),  # avant : 10
             ),
         ),
         text=city_df["ville"].tolist(),
-        textposition="bottom right",
-        textfont=dict(size=11, color="#1a1a1a"),
         customdata=city_df[["pop_median", "n_points"]].values,
         hovertemplate=(
             "<b>%{text}</b><br>"
@@ -1615,11 +1658,51 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
         showlegend=False,
     ))
 
+    # Labels — posés SOUS chaque bulle, à une distance proportionnelle à son
+    # rayon (décalage de latitude calculé au zoom courant). Le marqueur-ancre
+    # est invisible (opacity=0) ; il sert uniquement à porter le texte, car sous
+    # MapLibre une trace 'text' seule ne crée pas de couche de symboles.
+    label_lats = [
+        lat - _label_lat_offset_deg(size / 2.0, lat, auto_zoom)
+        for lat, size in zip(city_df["lat"], city_df["marker_size"])
+    ]
+    fig.add_trace(go.Scattermap(
+        lat=label_lats,
+        lon=city_df["lon"].tolist(),
+        mode="markers",
+        marker=dict(size=1, opacity=0),
+        text=city_df["ville"].tolist(),
+        textposition="bottom center",
+        textfont=dict(size=12, color="#1a1a1a", weight="bold"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
+    # Labels — posés SOUS chaque bulle, à une distance proportionnelle à son
+    # rayon (décalage de latitude calculé au zoom courant). Le marqueur-ancre
+    # est invisible (opacity=0) ; il sert uniquement à porter le texte, car sous
+    # MapLibre une trace 'text' seule ne crée pas de couche de symboles.
+    label_lats = [
+        lat - _label_lat_offset_deg(size / 2.0, lat, auto_zoom)
+        for lat, size in zip(city_df["lat"], city_df["marker_size"])
+    ]
+    fig.add_trace(go.Scattermap(
+        lat=label_lats,
+        lon=city_df["lon"].tolist(),
+        mode="markers+text",
+        marker=dict(size=1, opacity=0),
+        text=city_df["ville"].tolist(),
+        textposition="bottom center",
+        textfont=dict(size=12, color="#1a1a1a", weight="bold"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
     fig.update_layout(
         title=dict(text=title, font=dict(size=14)),
         height=height,
         margin=dict(l=0, r=10, t=40, b=0),
-        mapbox=dict(
+        map=dict(
             style=basemap_style,
             center=dict(lat=center_lat, lon=center_lon),
             zoom=auto_zoom,
@@ -1657,6 +1740,79 @@ def _figure_color_map(fig) -> dict:
             cmap[lg] = col
     return cmap
 
+def _strip_marker_suffix_in_legend(fig) -> None:
+    """
+    Retire le suffixe numérique de transition MS (.1, .2, ...) des libellés de
+    légende, pour l'affichage UNIQUEMENT. Ex. 'AMPH.2' -> 'AMPH',
+    'AMPH.2 — tendance 📈 hausse' -> 'AMPH — tendance 📈 hausse'.
+
+    On ne modifie que le nom affiché (tr.name) ; le legendgroup et les couleurs
+    — qui lient la trace de données à sa droite de tendance — restent intacts.
+    Les noms sans suffixe (villes, 'Charge moyenne') ne sont pas affectés.
+    """
+    for tr in fig.data:
+        if getattr(tr, "name", None):
+            tr.name = re.sub(r"\.\d+\b", "", tr.name)
+
+# Seuil (en % par an, relatif à la médiane du niveau) en deçà duquel la
+# tendance est jugée "stable". Repris de la convention ±2 % utilisée ailleurs
+# dans le dashboard (cf. _format_evolution). Ajustable selon le retour terrain.
+TREND_STABLE_THRESHOLD = 2.0
+
+
+def _trend_direction_label(slope_per_year: float, median: float,
+                           threshold_pct: float = TREND_STABLE_THRESHOLD) -> str:
+    """
+    Traduit la pente de Theil-Sen en indicateur qualitatif de direction,
+    avec la même convention 📈/➡️/📉 que le reste du dashboard.
+
+    La décision se fait sur la pente ANNUELLE RELATIVE (pente/an rapportée à
+    la médiane du niveau), pour que le seuil garde le même sens quelle que
+    soit l'échelle du stupéfiant.
+
+    - 📈 hausse   si pente relative > +seuil %/an
+    - 📉 baisse   si pente relative < -seuil %/an
+    - ➡️ stable   sinon
+    - "tendance indéterminée" si la médiane n'est pas exploitable (<= 0).
+    """
+    if not (np.isfinite(slope_per_year) and np.isfinite(median)) or median <= 0:
+        return "tendance indéterminée"
+    rel_pct = slope_per_year / median * 100.0
+    if rel_pct > threshold_pct:
+        return "📈 hausse"
+    if rel_pct < -threshold_pct:
+        return "📉 baisse"
+    return "➡️ stable"
+
+
+def _theil_sen_fit(x: np.ndarray, y: np.ndarray):
+    """
+    Estimateur de pente de Theil-Sen.
+
+    La pente est la MÉDIANE des pentes deux-à-deux (y_j - y_i)/(x_j - x_i)
+    entre tous les couples de points. Comme c'est une médiane, elle est
+    robuste aux valeurs aberrantes — contrairement à np.polyfit (moindres
+    carrés), qu'un seul point extrême peut fortement faire basculer.
+
+    L'ordonnée à l'origine est médiane(y - pente*x) (intercept classique de
+    Theil-Sen). Vérifié numériquement identique à scipy.stats.theilslopes
+    sur la pente.
+
+    Retourne (slope, intercept), ou (nan, nan) s'il n'existe pas au moins
+    deux points distincts en x.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    i, j = np.triu_indices(x.size, k=1)  # indices de tous les couples i < j
+    dx = x[j] - x[i]
+    valid = dx != 0
+    if not np.any(valid):
+        return np.nan, np.nan
+    slopes = (y[j] - y[i])[valid] / dx[valid]
+    slope = float(np.median(slopes))
+    intercept = float(np.median(y - slope * x))
+    return slope, intercept
+
 
 def _add_trendlines(fig, data, y_col, color_col, dash_col=None):
     if data.empty or y_col not in data.columns:
@@ -1675,23 +1831,28 @@ def _add_trendlines(fig, data, y_col, color_col, dash_col=None):
         xnum, ynum = xnum[mask], ynum[mask]
         if xnum.size < 2:
             continue
-        slope, intercept = np.polyfit(xnum, ynum, 1)
+        slope, intercept = _theil_sen_fit(xnum, ynum)
+        if not np.isfinite(slope):
+            continue
         x0, x1 = xnum.min(), xnum.max()
         y0, y1 = slope * x0 + intercept, slope * x1 + intercept
         d0 = pd.to_datetime([_dt.date.fromordinal(int(x0))])[0]
         d1 = pd.to_datetime([_dt.date.fromordinal(int(x1))])[0]
         main_key = keys[0] if isinstance(keys, tuple) else keys
         slope_per_year = slope * 365.25
-        name = f"{main_key} — tendance ({slope_per_year:+.1f}/an)"
+        med = float(np.nanmedian(ynum)) if np.isfinite(ynum).any() else np.nan
+        direction = _trend_direction_label(slope_per_year, med)
+        name = f"{main_key} — tendance {direction}"
+        slope_str = f"{slope_per_year:+.1f} mg/j/1000 hab. par an"
         line_color = color_map.get(str(main_key))
         fig.add_trace(go.Scatter(
             x=[d0, d1], y=[y0, y1],
             mode="lines",
             name=name, legendgroup=str(main_key),
             line=dict(width=2.5, dash="dash", color=line_color),
-            hoverinfo="skip", showlegend=True,
+            hovertemplate=f"Tendance (Sen) : {slope_str}<extra></extra>",
+            showlegend=True,
         ))
-        med = float(np.nanmedian(ynum)) if np.isfinite(ynum).any() else np.nan
         rel_pct = (slope_per_year / med * 100.0) if med and np.isfinite(med) else np.nan
         rows.append({color_col: main_key, "pente_an": slope_per_year, "pente_rel_%/an": rel_pct, "n_points": len(dsub)})
     return pd.DataFrame(rows)
@@ -1907,25 +2068,34 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
 
     display_cols = []
 
-    base_cols = ["date", "ville", "composes"]
+    # Identifiants : ville + composé.
+    # (MODIF) "date" n'est plus listée ici : elle sera remplacée par "Trimestre" plus bas.
+    base_cols = ["ville", "composes"]
     for c in base_cols:
         if c in df_view.columns:
             display_cols.append(c)
 
-    rep_cols = [c for c in ["rep_1", "rep_2", "rep_3"] if c in df_view.columns]
-    display_cols.extend(rep_cols)
+    # (MODIF) On n'affiche plus les réplicats bruts (rep_1/rep_2/rep_3).
+    # rep_cols = [c for c in ["rep_1", "rep_2", "rep_3"] if c in df_view.columns]
+    # display_cols.extend(rep_cols)
 
+    # Drapeaux qualité
     flag_cols = ["inf_lod", "inf_loq", "outlier"]
     for c in flag_cols:
         if c in df_view.columns:
             display_cols.append(c)
 
-    calc_cols = ["conc_raw_ng_l", "flag_status", "conc_final_ng_l", "vol_jour", "pop", "charge_calc", "y", "is_outlier"]
+    # Colonnes calculées : on garde les DEUX moyennes (brute + finale).
+    # conc_raw_ng_l  = moyenne des 3 réplicats (déjà calculée dans process_wbe_data)
+    # conc_final_ng_l = idem, mais valeurs <LOD/<LOQ remplacées par une valeur de substitution
+    calc_cols = ["conc_raw_ng_l", "flag_status", "conc_final_ng_l",
+                 "vol_jour", "pop", "y", "is_outlier"]
     for c in calc_cols:
         if c in df_view.columns:
             display_cols.append(c)
 
-    norm_cols = ["quarter", "pur_median_q", "y_norm"]
+    # (MODIF) "quarter" retirée : elle ferait doublon avec la colonne "Trimestre" ajoutée plus bas.
+    norm_cols = ["pur_median_q", "y_norm"]
     for c in norm_cols:
         if c in df_view.columns:
             display_cols.append(c)
@@ -1935,8 +2105,11 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
 
     df_display = df_view[display_cols].copy()
 
-    if "date" in df_display.columns:
-        df_display["date"] = pd.to_datetime(df_display["date"]).dt.strftime("%Y-%m-%d")
+    # (MODIF) Trimestre : on dérive le label "AAAA TX" depuis la date, en 1re colonne.
+    if "date" in df_view.columns:
+        q = pd.to_datetime(df_view["date"]).dt.to_period("Q")
+        df_display.insert(0, "Trimestre",
+                          q.dt.year.astype(str) + " T" + q.dt.quarter.astype(str))
 
     numeric_cols = df_display.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
@@ -1946,8 +2119,8 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
             df_display[col] = df_display[col].round(3)
 
     col_rename = {
-        "conc_raw_ng_l": "Conc. brute (ng/L)",
-        "conc_final_ng_l": "Conc. finale (ng/L)",
+        "conc_raw_ng_l": "Conc. moyenne brute (ng/L)",    # (MODIF) libellé
+        "conc_final_ng_l": "Conc. moyenne finale (ng/L)",  # (MODIF) libellé
         "charge_calc": "Charge calc (mg/j/1000)",
         "y": "Y (stats)",
         "flag_status": "Flag",
@@ -1961,8 +2134,10 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
     }
     df_display = df_display.rename(columns={k: v for k, v in col_rename.items() if k in df_display.columns})
 
+    # (MODIF) tri par trimestre au lieu de la date
+    sort_cols = [c for c in ["ville", "composes", "Trimestre"] if c in df_display.columns]
     st.dataframe(
-        df_display.sort_values(by=[c for c in ["ville", "composes", "date"] if c in df_display.columns]),
+        df_display.sort_values(by=sort_cols),
         width='stretch',
         hide_index=True
     )
@@ -2134,6 +2309,7 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
                 ),
             ))
 
+    _strip_marker_suffix_in_legend(fig1)
     st.plotly_chart(fig1, width='stretch', key=f"{key_prefix}chart_raw")
     st.markdown(f'<div class="chart-footnote">{figure_footnote(df_view, "y")}</div>', unsafe_allow_html=True)
 
@@ -2184,6 +2360,7 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
                     if show_trend and not df_norm_plot.empty:
                         _add_trendlines(fig2, df_norm_plot, y_col="y_norm", color_col=color_col, dash_col=dash_col)
 
+                    _strip_marker_suffix_in_legend(fig2)
                     st.plotly_chart(fig2, width='stretch', key=f"{key_prefix}chart_norm")
 
                 with col2:
@@ -2219,6 +2396,27 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
             st.markdown("---")
         render_detailed_data_table(df_view, key_prefix=key_prefix)
 
+def render_map_city_table(df_analyte: pd.DataFrame):
+    """
+    Tableau récap par ville pour la carte : Ville, Population, Charge médiane.
+    Reflète exactement ce que représente chaque cercle :
+    couleur = charge médiane, taille = population.
+    """
+    city_df = build_city_bubble_df(df_analyte, value_col="y")
+    if city_df.empty:
+        st.info("Aucune donnée à afficher.")
+        return
+
+    tbl = city_df[["ville", "pop_median", "value_median"]].copy()
+    tbl = tbl.sort_values("value_median", ascending=False)
+    tbl["pop_median"] = pd.to_numeric(tbl["pop_median"], errors="coerce").round(0).astype("Int64")
+    tbl["value_median"] = pd.to_numeric(tbl["value_median"], errors="coerce").round(1)
+    tbl = tbl.rename(columns={
+        "ville": "Ville",
+        "pop_median": "Population (hab.)",
+        "value_median": "Charge médiane (mg/j/1000 hab.)",
+    })
+    st.dataframe(tbl, width="stretch", hide_index=True)
 
 def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city=None):
     """
@@ -2285,7 +2483,9 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
         ville_order = list(medians.index)
         y_max_zoom = _compute_zoom_ymax(sub)
 
-        col_map, col_box = st.columns([1, 1.3], gap="large")
+        # (MODIF) Boxplot mis en pause : la carte passe en pleine largeur.
+        # Pour revenir en arrière : col_map, col_box = st.columns([1, 1.3], gap="large")
+        col_map = st.container()
 
         with col_map:
             st.markdown("**🗺️ Carte — couleur = concentration médiane**")
@@ -2294,93 +2494,98 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
                 value_col="y",
                 title="",
                 units="mg/j/1000 hab.",
-                basemap_style="carto-positron",
+                basemap_style="carto-positron-nolabels",
                 zoom=6.2,
-                height=480,
+                height=880,
                 key=f"{key_prefix}map_{analyte}",
                 highlight_city=highlight_city,
             )
 
-        with col_box:
-            st.markdown("**📊 Boxplots — couleur = charge (médiane par ville)**")
+        # (MODIF) Données détaillées de la carte : 1 ligne par ville
+        with st.expander(f"📋 Données détaillées — {analyte}", expanded=False):
+            render_map_city_table(sub)
 
-            vmin = float(medians.min())
-            vmax = float(medians.max())
-            if vmax == vmin:
-                vmax = vmin + 1e-9
-
-            def _rgba_from_scale(v: float, alpha: float) -> str:
-                if pd.isna(v):
-                    return f"rgba(160,160,160,{alpha})"
-                t = (float(v) - vmin) / (vmax - vmin)
-                t = max(0.0, min(1.0, t))
-                c = pc.sample_colorscale(CONCENTRATION_COLORSCALE, [t])[0]
-                if isinstance(c, str) and c.startswith('#'):
-                    hx = c.lstrip('#')
-                    r = int(hx[0:2], 16);
-                    g = int(hx[2:4], 16);
-                    b = int(hx[4:6], 16)
-                    return f"rgba({r},{g},{b},{alpha})"
-                nums = str(c).strip('rgb()').split(',')
-                r, g, b = [int(float(x)) for x in nums]
-                return f"rgba({r},{g},{b},{alpha})"
-
-            fig = go.Figure()
-
-            for ville in ville_order:
-                sub_ville = sub[sub['ville'] == ville]
-                v_med = float(medians.loc[ville])
-                fill = _rgba_from_scale(v_med, alpha=0.28)
-                line = _rgba_from_scale(v_med, alpha=1.0)
-                pts = _rgba_from_scale(v_med, alpha=0.55)
-
-                # Mise en évidence si c'est la STEP sélectionnée : contour foncé épais
-                # (on préserve la couleur de fond — l'info de concentration reste lisible)
-                is_highlighted = (highlight_city is not None and ville == highlight_city)
-                box_line_color = "#1a1a1a" if is_highlighted else line
-                box_line_width = 3.0 if is_highlighted else 1.8
-
-                fig.add_trace(go.Box(
-                    x=[ville] * len(sub_ville),
-                    y=sub_ville['y'],
-                    name=ville,
-                    fillcolor=fill,
-                    line=dict(color=box_line_color, width=box_line_width),
-                    marker=dict(color=pts),
-                    boxmean=False,
-                    showlegend=False,
-                    boxpoints='outliers'
-                ))
-
-                fig.add_trace(go.Scatter(
-                    x=[ville] * len(sub_ville),
-                    y=sub_ville['y'],
-                    mode='markers',
-                    marker=dict(color=pts, size=5, opacity=0.35),
-                    hovertemplate=(
-                        'Ville: %{x}<br>'
-                        'Charge: %{y:.2f} mg/j/1000 hab<br>'
-                        '<extra></extra>'
-                    ),
-                    showlegend=False
-                ))
-
-            fig.update_layout(
-                xaxis_title="Ville",
-                yaxis_title="Charge (mg/jour/1000 habitants)",
-                xaxis=dict(categoryorder="array", categoryarray=ville_order, tickangle=-45),
-                height=480,
-                plot_bgcolor="white",
-                margin=dict(l=60, r=30, t=60, b=80),
-            )
-            fig.update_yaxes(range=[0, y_max_zoom], gridcolor="#f0f0f0", zerolinecolor="#e0e0e0")
-
-            st.plotly_chart(fig, width='stretch', key=f"{key_prefix}boxplot_{analyte}")
+        # with col_box:
+        #     st.markdown("**📊 Boxplots — couleur = charge (médiane par ville)**")
+        #
+        #     vmin = float(medians.min())
+        #     vmax = float(medians.max())
+        #     if vmax == vmin:
+        #         vmax = vmin + 1e-9
+        #
+        #     def _rgba_from_scale(v: float, alpha: float) -> str:
+        #         if pd.isna(v):
+        #             return f"rgba(160,160,160,{alpha})"
+        #         t = (float(v) - vmin) / (vmax - vmin)
+        #         t = max(0.0, min(1.0, t))
+        #         c = pc.sample_colorscale(CONCENTRATION_COLORSCALE, [t])[0]
+        #         if isinstance(c, str) and c.startswith('#'):
+        #             hx = c.lstrip('#')
+        #             r = int(hx[0:2], 16);
+        #             g = int(hx[2:4], 16);
+        #             b = int(hx[4:6], 16)
+        #             return f"rgba({r},{g},{b},{alpha})"
+        #         nums = str(c).strip('rgb()').split(',')
+        #         r, g, b = [int(float(x)) for x in nums]
+        #         return f"rgba({r},{g},{b},{alpha})"
+        #
+        #     fig = go.Figure()
+        #
+        #     for ville in ville_order:
+        #         sub_ville = sub[sub['ville'] == ville]
+        #         v_med = float(medians.loc[ville])
+        #         fill = _rgba_from_scale(v_med, alpha=0.28)
+        #         line = _rgba_from_scale(v_med, alpha=1.0)
+        #         pts = _rgba_from_scale(v_med, alpha=0.55)
+        #
+        #         # Mise en évidence si c'est la STEP sélectionnée : contour foncé épais
+        #         # (on préserve la couleur de fond — l'info de concentration reste lisible)
+        #         is_highlighted = (highlight_city is not None and ville == highlight_city)
+        #         box_line_color = "#1a1a1a" if is_highlighted else line
+        #         box_line_width = 3.0 if is_highlighted else 1.8
+        #
+        #         fig.add_trace(go.Box(
+        #             x=[ville] * len(sub_ville),
+        #             y=sub_ville['y'],
+        #             name=ville,
+        #             fillcolor=fill,
+        #             line=dict(color=box_line_color, width=box_line_width),
+        #             marker=dict(color=pts),
+        #             boxmean=False,
+        #             showlegend=False,
+        #             boxpoints='outliers'
+        #         ))
+        #
+        #         fig.add_trace(go.Scatter(
+        #             x=[ville] * len(sub_ville),
+        #             y=sub_ville['y'],
+        #             mode='markers',
+        #             marker=dict(color=pts, size=5, opacity=0.35),
+        #             hovertemplate=(
+        #                 'Ville: %{x}<br>'
+        #                 'Charge: %{y:.2f} mg/j/1000 hab<br>'
+        #                 '<extra></extra>'
+        #             ),
+        #             showlegend=False
+        #         ))
+        #
+        #     fig.update_layout(
+        #         xaxis_title="Ville",
+        #         yaxis_title="Charge (mg/jour/1000 habitants)",
+        #         xaxis=dict(categoryorder="array", categoryarray=ville_order, tickangle=-45),
+        #         height=480,
+        #         plot_bgcolor="white",
+        #         margin=dict(l=60, r=30, t=60, b=80),
+        #     )
+        #     fig.update_yaxes(range=[0, y_max_zoom], gridcolor="#f0f0f0", zerolinecolor="#e0e0e0")
+        #
+        #     st.plotly_chart(fig, width='stretch', key=f"{key_prefix}boxplot_{analyte}")
 
         st.markdown("---")
 
-    with st.expander("📋 Données détaillées"):
-        render_detailed_data_table(df_view, key_prefix=key_prefix)
+    # (MODIF) Remplacé par le tableau par ville sous chaque carte (voir boucle ci-dessus)
+    # with st.expander("📋 Données détaillées"):
+    #     render_detailed_data_table(df_view, key_prefix=key_prefix)
 
 
 def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_city=None):
@@ -2918,8 +3123,10 @@ with tabs[1]:
                         )
                     else:
                         liaison = de_d_apostrophe(primary_name)
+                        periode = period_label_fr(df_primary)
+                        periode_suffix = f" -- {periode}" if periode else ""
                         st.markdown(
-                            f"### Comparaison entre villes des charges {liaison}{primary_name}"
+                            f"### Comparaison entre villes des charges {liaison}{primary_name}{periode_suffix}"
                         )
                         render_comparison_with_map(
                             df_primary, selected_stup,
@@ -2967,10 +3174,12 @@ with tabs[1]:
                         )
                     else:
                         liaison = de_d_apostrophe(primary_name)
+                        periode = period_label_fr(df_primary)
+                        periode_suffix = f" -- {periode}" if periode else ""
                         if "Tendances" in comparison_mode:
                             st.markdown(
                                 f"### Évolution dans le temps des charges {liaison}{primary_name} "
-                                f"dans les eaux usées"
+                                f"dans les eaux usées{periode_suffix}"
                             )
                             render_timeseries_chart(
                                 df_primary, False, False, df_mkt, start_d, end_d,
@@ -2981,7 +3190,7 @@ with tabs[1]:
                         else:  # Boxplots uniquement
                             st.markdown(
                                 f"### Comparaison des charges médianes {liaison}{primary_name} "
-                                f"entre les villes"
+                                f"entre les villes{periode_suffix}"
                             )
                             render_comparison_boxplot_only(
                                 df_primary, selected_stup,
@@ -3092,9 +3301,11 @@ with tabs[1]:
                         else:
                             # Titre du graphique
                             liaison = de_d_apostrophe(primary_name)
+                            periode = period_label_fr(df_primary)
+                            periode_suffix = f" -- {periode}" if periode else ""
                             st.markdown(
                                 f"### Évolution dans le temps des charges {liaison}{primary_name} "
-                                f"dans les eaux usées de {city}"
+                                f"dans les eaux usées de {city}{periode_suffix}"
                             )
                             render_timeseries_chart(
                                 df_primary, show_trend, normalize, df_mkt, start_d, end_d,
