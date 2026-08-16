@@ -328,23 +328,80 @@ def aggregate_by_quarter(df: pd.DataFrame) -> pd.DataFrame:
     aggregated_rows = []
     grp_cols = ["_quarter", "ville", "composes"]
 
+    def _censor_counts(rows: pd.DataFrame) -> tuple:
+        """(n_lod, n_loq) sur un sous-ensemble de lignes brutes."""
+        if "flag_status" not in rows.columns:
+            return 0, 0
+        return (int((rows["flag_status"] == "LOD").sum()),
+                int((rows["flag_status"] == "LOQ").sum()))
+
+    def _aggregated_flag(n_measures, n_lod, n_loq) -> str:
+        """Statut du POINT agrégé (et non d'une mesure individuelle)."""
+        n_cens = n_lod + n_loq
+        if n_measures == 0:
+            return "Aucune mesure"
+        if n_cens == 0:
+            return "Normal"
+        if n_cens < n_measures:
+            return "Partiel"
+        if n_loq == 0:
+            return "LOD"
+        if n_lod == 0:
+            return "LOQ"
+        return "LOD/LOQ"
+
     for (quarter, ville, composes), group in d.groupby(grp_cols, dropna=False):
         pool_rows = group[group["pool_daily"] == "pool"]
 
         if len(pool_rows) > 0:
             # Au moins un pool → priorité, on garde les pool tels quels
             for _, row in pool_rows.iterrows():
-                aggregated_rows.append(row.to_dict())
+                new_row = row.to_dict()
+                is_out = bool(new_row.get("is_outlier", False))
+                if is_out:
+                    # Outlier : déjà exclu (y = NaN), ce n'est pas une censure.
+                    n_meas, n_lod, n_loq = 0, 0, 0
+                else:
+                    n_meas = 1
+                    n_lod = 1 if new_row.get("flag_status") == "LOD" else 0
+                    n_loq = 1 if new_row.get("flag_status") == "LOQ" else 0
+                    if n_lod or n_loq:
+                        # Mesure censurée → aucune charge tracée.
+                        new_row["y"] = np.nan
+                new_row["n_measures"] = n_meas
+                new_row["n_lod"] = n_lod
+                new_row["n_loq"] = n_loq
+                new_row["n_censored"] = n_lod + n_loq
+                new_row["all_censored"] = bool(n_meas > 0 and (n_lod + n_loq) == n_meas)
+                new_row["flag_status"] = _aggregated_flag(n_meas, n_lod, n_loq) \
+                    if not is_out else new_row.get("flag_status", "Normal")
+                aggregated_rows.append(new_row)
         else:
-            # Que des daily → moyenne arithmétique de y
-            mean_y = group["y"].mean()  # skipna=True par défaut
-            if pd.isna(mean_y):
+            # Que des daily → moyenne arithmétique de y.
+            # Les mesures censurées (<LOD/<LOQ) ont une charge de 0 : elles
+            # participent donc à la moyenne en pesant 0 (choix explicite).
+            # Les outliers ont y = NaN et sont ignorés.
+            contrib = group[group["y"].notna()]
+            n_meas = len(contrib)
+            if n_meas == 0:
                 # Tous les y sont NaN (tous outliers) → on saute
                 continue
 
+            n_lod, n_loq = _censor_counts(contrib)
+            n_cens = n_lod + n_loq
+
             new_row = group.iloc[0].to_dict()
-            new_row["y"] = mean_y
+            # Si TOUTES les mesures du trimestre sont censurées, il n'y a pas
+            # de charge mesurable → on ne trace pas le point.
+            new_row["y"] = np.nan if n_cens == n_meas else contrib["y"].mean()
             new_row["date"] = quarter.start_time  # 1er jour du trimestre
+            new_row["n_measures"] = n_meas
+            new_row["n_lod"] = n_lod
+            new_row["n_loq"] = n_loq
+            new_row["n_censored"] = n_cens
+            new_row["all_censored"] = bool(n_cens == n_meas)
+            new_row["flag_status"] = _aggregated_flag(n_meas, n_lod, n_loq)
+            new_row["is_outlier"] = False
             aggregated_rows.append(new_row)
 
     if not aggregated_rows:
@@ -441,8 +498,14 @@ _META_REGEX = re.compile(
 # ----------------------
 # CONSTANTES POUR LE TRAITEMENT DES DONNÉES
 # ----------------------
-LOQ_REPLACEMENT_VALUE = 5.0  # ng/L - valeur utilisée quand inf_LOQ = TRUE
+# Valeurs de substitution pour les mesures censurées.
+# Convention retenue : une mesure <LOD ou <LOQ ne produit AUCUNE charge.
+#   - dans une moyenne trimestrielle mixte, elle pèse 0 ;
+#   - si TOUTES les mesures d'un trimestre sont censurées, le point n'est pas
+#     tracé du tout (y = NaN) et le trimestre est listé sous le graphe.
+LOQ_REPLACEMENT_VALUE = 0.0  # ng/L - valeur utilisée quand inf_LOQ = TRUE
 LOD_REPLACEMENT_VALUE = 0.0  # ng/L - valeur utilisée quand inf_LOD = TRUE
+CENSORED_FLAGS = ("LOD", "LOQ")
 
 # ----------------------
 # STYLE CSS
@@ -716,7 +779,7 @@ st.markdown("""
     background: rgba(255, 255, 255, 0.92);
     border: 1px solid rgba(0, 0, 0, 0.15);
     border-radius: 6px;
-    padding: 12x 16px;
+    padding: 12px 16px;
     font-size: 15px !important;
     color: #333;
     z-index: 1000;
@@ -1027,6 +1090,148 @@ def figure_footnote(df_plot: pd.DataFrame, y_col: str) -> str:
         f"Points : <strong>{n_total}</strong> • "
         f"Période : <strong>{dmin} → {dmax}</strong>"
     )
+
+
+# ----------------------
+# TRANSPARENCE : MESURES SOUS LES LIMITES ANALYTIQUES (<LOD / <LOQ)
+# ----------------------
+# Convention du dashboard : une mesure <LOD ou <LOQ ne produit aucune charge.
+#   - trimestre dont TOUTES les mesures sont censurées -> point non tracé
+#     (y = NaN) ; le trimestre est listé sous le graphe ;
+#   - trimestre partiellement censuré -> point tracé, les mesures censurées
+#     pesant 0 dans la moyenne ; signalé lui aussi sous le graphe.
+# Ces fonctions s'appuient sur les colonnes ajoutées par aggregate_by_quarter
+# (n_measures, n_lod, n_loq, n_censored, all_censored). Si elles sont absentes
+# (données non agrégées), les fonctions ne renvoient rien plutôt que de deviner.
+
+_CENSORED_LIST_CAP = 12  # au-delà, on résume au lieu de tout lister
+
+
+def _censored_kind_label(n_lod: int, n_loq: int) -> str:
+    parts = []
+    if n_lod:
+        parts.append("&lt;LOD")
+    if n_loq:
+        parts.append("&lt;LOQ")
+    return ", ".join(parts)
+
+
+def _quarter_list_html(rows: pd.DataFrame, with_kind: bool = True) -> str:
+    """Liste de trimestres 'AAAA Tn (<LOD)', tronquée au-delà du cap."""
+    labels = []
+    for _, r in rows.sort_values("date").iterrows():
+        q = pd.to_datetime(r["date"]).to_period("Q")
+        lab = _quarter_fr(q)
+        if with_kind:
+            kind = _censored_kind_label(int(r.get("n_lod", 0) or 0),
+                                        int(r.get("n_loq", 0) or 0))
+            if kind:
+                lab = f"{lab} ({kind})"
+        labels.append(lab)
+    if len(labels) > _CENSORED_LIST_CAP:
+        shown = labels[:_CENSORED_LIST_CAP]
+        return ", ".join(shown) + f" … et {len(labels) - _CENSORED_LIST_CAP} autre(s)"
+    return ", ".join(labels)
+
+
+def has_censored_info(df_view: pd.DataFrame) -> bool:
+    """Vrai si le DataFrame porte les colonnes de censure (données agrégées)."""
+    return (df_view is not None and not df_view.empty
+            and {"n_censored", "n_measures"}.issubset(df_view.columns))
+
+
+def render_censored_note(df_view: pd.DataFrame):
+    """
+    Note de transparence affichée SOUS le graphe : quels analytes / trimestres
+    ne sont pas représentés (toutes mesures <LOD ou <LOQ) et lesquels le sont
+    partiellement. N'affiche rien s'il n'y a aucune mesure censurée.
+    """
+    if not has_censored_info(df_view):
+        return
+
+    d = df_view.copy()
+    d["n_censored"] = pd.to_numeric(d["n_censored"], errors="coerce").fillna(0)
+    d = d[d["n_censored"] > 0]
+    if d.empty:
+        return
+
+    multi_city = "ville" in d.columns and d["ville"].nunique() > 1
+    group_cols = (["ville", "composes"] if multi_city else ["composes"])
+
+    blocks = []
+    for keys, grp in d.groupby(group_cols, dropna=False):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        analyte = keys[-1]
+        name = analyte_full_name_only(analyte)
+        prefix = f"<strong>{keys[0]}</strong> — " if multi_city else ""
+
+        masked = grp[grp["y"].isna()]
+        partial = grp[grp["y"].notna()]
+
+        phrases = []
+        if not masked.empty:
+            n = len(masked)
+            phrases.append(
+                f"{n} trimestre{'s' if n > 1 else ''} non représenté"
+                f"{'s' if n > 1 else ''} (aucune mesure quantifiable) : "
+                f"{_quarter_list_html(masked)}"
+            )
+        if not partial.empty:
+            n = len(partial)
+            n_cens = int(partial["n_censored"].sum())
+            n_meas = int(pd.to_numeric(partial["n_measures"], errors="coerce")
+                         .fillna(0).sum())
+            phrases.append(
+                f"{n} trimestre{'s' if n > 1 else ''} affiché"
+                f"{'s' if n > 1 else ''} contenant des mesures sous les limites "
+                f"({n_cens} mesure(s) sur {n_meas}, comptées comme 0 dans la "
+                f"moyenne) : {_quarter_list_html(partial, with_kind=False)}"
+            )
+
+        if phrases:
+            blocks.append(f"<li>{prefix}<strong>{name}</strong> — "
+                          + " ; ".join(phrases) + ".</li>")
+
+    if not blocks:
+        return
+
+    st.markdown(
+        '<div style="background:#fff8e6; border-left:4px solid #e0a800;'
+        ' border-radius:6px; padding:0.6rem 0.9rem; margin:0.35rem 0 0.9rem 0;'
+        ' font-size:0.9rem; color:#4a4a4a;">'
+        '<strong>ℹ️ Mesures sous les limites analytiques</strong>'
+        '<ul style="margin:0.4rem 0 0 1.1rem; padding:0;">'
+        + "".join(blocks) +
+        '</ul>'
+        '<div style="margin-top:0.45rem; font-style:italic;">'
+        '&lt;LOD = non détecté ; &lt;LOQ = détecté mais non quantifiable. '
+        'Dans les deux cas aucune charge n\'est calculée : ce n\'est pas une '
+        'consommation nulle, mais une absence de mesure exploitable.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_no_series_message(df_primary: pd.DataFrame, analyte_label: str):
+    """
+    Message affiché quand aucun point n'est traçable pour un analyte.
+    Distingue « aucune mesure » de « toutes les mesures sont sous les limites ».
+    """
+    if has_censored_info(df_primary) and not df_primary.empty:
+        n_meas = int(pd.to_numeric(df_primary["n_measures"], errors="coerce")
+                     .fillna(0).sum())
+        n_cens = int(pd.to_numeric(df_primary["n_censored"], errors="coerce")
+                     .fillna(0).sum())
+        if n_meas > 0 and n_cens == n_meas:
+            st.info(
+                f"ℹ️ Toutes les analyses effectuées pour {analyte_label} sont "
+                f"inférieures à la limite de détection ou de quantification : "
+                f"aucune charge n'est représentée. Cela ne signifie pas une "
+                f"consommation nulle, mais que les concentrations mesurées "
+                f"sont trop faibles pour être exploitées."
+            )
+            return
+    st.info(f"ℹ️ Aucune mesure disponible pour {analyte_label}.")
 
 
 def is_true_value(val) -> bool:
@@ -1489,6 +1694,45 @@ def build_city_bubble_df(df_sub: pd.DataFrame, value_col: str = "y") -> pd.DataF
 
 
 @st.cache_data(ttl=3600)
+def build_nq_city_df(df_sub: pd.DataFrame, value_col: str = "y") -> pd.DataFrame:
+    """
+    Villes présentes dans df_sub mais dont AUCUN point n'est quantifiable
+    (toutes les mesures <LOD/<LOQ) — elles seraient sinon absentes de la carte.
+
+    Retourne le même schéma que build_city_bubble_df (ville, pop_median, lat,
+    lon, n_points), enrichi de n_measures / n_lod / n_loq pour le tooltip.
+    DataFrame vide s'il n'y a rien à signaler.
+    """
+    if df_sub is None or df_sub.empty or "ville" not in df_sub.columns:
+        return pd.DataFrame()
+
+    d = df_sub.copy()
+    d[value_col] = pd.to_numeric(d.get(value_col), errors="coerce")
+    villes_ok = set(d.dropna(subset=[value_col])["ville"].dropna().unique())
+    villes_nq = [v for v in sorted(d["ville"].dropna().unique())
+                 if v not in villes_ok]
+    if not villes_nq:
+        return pd.DataFrame()
+
+    d_nq = d[d["ville"].isin(villes_nq)].copy()
+    # Valeur factice : sert uniquement à réutiliser l'agrégation géographique
+    # de build_city_bubble_df (coordonnées + population). Elle n'est jamais
+    # affichée comme une charge.
+    d_nq[value_col] = 0.0
+    out = build_city_bubble_df(d_nq, value_col=value_col)
+    if out.empty:
+        return out
+
+    for c in ("n_measures", "n_lod", "n_loq"):
+        if c in d_nq.columns:
+            s = pd.to_numeric(d_nq[c], errors="coerce").fillna(0).groupby(
+                d_nq["ville"]).sum()
+            out[c] = out["ville"].map(s).fillna(0).astype(int)
+        else:
+            out[c] = 0
+    return out
+
+
 def _fetch_cantons_geojson():
     """Télécharge et cache le GeoJSON des cantons suisses."""
     CANTONS_GEOJSON_URL = "https://raw.githubusercontent.com/greymass/countrydata/master/data/switzerland/cantons.geojson"
@@ -1532,8 +1776,15 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     - Frontières cantonales suisses superposées (GeoJSON)
     """
     city_df = build_city_bubble_df(df_sub, value_col=value_col)
+    # Villes sans aucune charge quantifiable : elles restent sur la carte sous
+    # forme d'anneau gris évidé, pour ne pas laisser croire à un oubli.
+    nq_df = build_nq_city_df(df_sub, value_col=value_col)
 
-    if city_df.empty:
+    if not city_df.empty:
+        city_df["value_median"] = pd.to_numeric(city_df["value_median"], errors="coerce")
+        city_df = city_df.dropna(subset=["value_median"])
+
+    if city_df.empty and nq_df.empty:
         if "ville" in df_sub.columns:
             missing = df_sub["ville"].dropna().unique().tolist()
             st.warning(f"⚠️ Pas de coordonnées géographiques pour : {', '.join(missing)}")
@@ -1541,19 +1792,18 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             st.info("Pas assez d'informations géographiques pour afficher la carte.")
         return
 
-    city_df["value_median"] = pd.to_numeric(city_df["value_median"], errors="coerce")
-    city_df = city_df.dropna(subset=["value_median"])
-    if city_df.empty:
-        st.warning("⚠️ Aucune valeur médiane valide pour afficher la carte.")
-        return
+    has_values = not city_df.empty
 
     # Échelle de couleur (concentration)
-    val_min = float(city_df["value_median"].min())
-    val_max = float(city_df["value_median"].max())
-    if val_min == val_max:
-        margin = max(abs(val_min) * 0.1, 1.0)
-        val_min -= margin
-        val_max += margin
+    if has_values:
+        val_min = float(city_df["value_median"].min())
+        val_max = float(city_df["value_median"].max())
+        if val_min == val_max:
+            margin = max(abs(val_min) * 0.1, 1.0)
+            val_min -= margin
+            val_max += margin
+    else:
+        val_min, val_max = 0.0, 1.0
 
     # Taille des cercles ∝ √population, sur une échelle ABSOLUE 10k → 500k habitants
     # (cohérence visuelle d'une vue à l'autre : Bulle a toujours la même taille
@@ -1563,10 +1813,16 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     SIZE_MIN_PX = 20
     SIZE_MAX_PX = 73
 
-    pop_clipped = pd.to_numeric(city_df["pop_median"], errors="coerce").fillna(POP_MIN_REF)
-    pop_clipped = pop_clipped.clip(lower=POP_MIN_REF, upper=POP_MAX_REF)
-    normalized = (pop_clipped - POP_MIN_REF) / (POP_MAX_REF - POP_MIN_REF)
-    city_df["marker_size"] = SIZE_MIN_PX + (normalized ** 0.5) * (SIZE_MAX_PX - SIZE_MIN_PX)
+    def _marker_size(frame: pd.DataFrame) -> pd.Series:
+        pop_clipped = pd.to_numeric(frame["pop_median"], errors="coerce").fillna(POP_MIN_REF)
+        pop_clipped = pop_clipped.clip(lower=POP_MIN_REF, upper=POP_MAX_REF)
+        normalized = (pop_clipped - POP_MIN_REF) / (POP_MAX_REF - POP_MIN_REF)
+        return SIZE_MIN_PX + (normalized ** 0.5) * (SIZE_MAX_PX - SIZE_MIN_PX)
+
+    if has_values:
+        city_df["marker_size"] = _marker_size(city_df)
+    if not nq_df.empty:
+        nq_df["marker_size"] = _marker_size(nq_df)
 
     # Couches custom : frontières cantonales
     cantons_geojson = _fetch_cantons_geojson()
@@ -1585,15 +1841,17 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     # - 1 seule ville → zoom serré
     # - toutes romandes ou neutres (Bern) → cadrage Romandie élargie
     # - au moins une alémanique → cadrage Suisse entière
-    lats = city_df["lat"].tolist()
-    lons = city_df["lon"].tolist()
+    pts = pd.concat([f for f in (city_df, nq_df) if not f.empty],
+                    ignore_index=True)
+    lats = pts["lat"].tolist()
+    lons = pts["lon"].tolist()
 
-    if len(city_df) == 1:
+    if len(pts) == 1:
         center_lat = lats[0]
         center_lon = lons[0]
         auto_zoom = 9.0
     else:
-        villes_norm = {_norm(v) for v in city_df["ville"]}
+        villes_norm = {_norm(v) for v in pts["ville"]}
         only_romande_or_neutral = villes_norm.issubset(ROMANDE_CITIES | NEUTRAL_CITIES)
 
         if only_romande_or_neutral:
@@ -1610,7 +1868,7 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     fig = go.Figure()
 
     # Halo foncé sous la ville sélectionnée (rendu AVANT la trace principale → en arrière-plan)
-    if highlight_city is not None and highlight_city in city_df["ville"].values:
+    if has_values and highlight_city is not None and highlight_city in city_df["ville"].values:
         df_halo = city_df[city_df["ville"] == highlight_city]
         fig.add_trace(go.Scattermap(
             lat=df_halo["lat"].tolist(),
@@ -1625,7 +1883,8 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             showlegend=False,
         ))
 
-    fig.add_trace(go.Scattermap(
+    if has_values:
+      fig.add_trace(go.Scattermap(
         lat=city_df["lat"].tolist(),
         lon=city_df["lon"].tolist(),
         mode="markers",
@@ -1656,7 +1915,58 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
             "<extra></extra>"
         ),
         showlegend=False,
-    ))
+      ))
+
+    # --- Villes sans charge quantifiable : anneau gris évidé ---------------
+    # Plotly ne permet PAS de contour ni de pointillé sur un marqueur de carte
+    # (go.Scattermap.marker n'expose ni 'line' ni 'dash'). L'anneau est donc
+    # obtenu en superposant un disque gris et un disque blanc plus petit, ce
+    # qui donne un cercle vide à taille de pixel constante, cohérente avec les
+    # bulles de population.
+    if not nq_df.empty:
+        RING_COLOR = "#8d99ae"
+        ring_sizes = nq_df["marker_size"].tolist()
+        fig.add_trace(go.Scattermap(          # disque extérieur = bord de l'anneau
+            lat=nq_df["lat"].tolist(),
+            lon=nq_df["lon"].tolist(),
+            mode="markers",
+            marker=dict(size=ring_sizes, color=RING_COLOR, opacity=0.85),
+            text=nq_df["ville"].tolist(),
+            customdata=nq_df[["pop_median", "n_measures", "n_lod", "n_loq"]].values,
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Aucune charge quantifiable<br>"
+                "%{customdata[2]} &lt;LOD, %{customdata[3]} &lt;LOQ "
+                "sur %{customdata[1]} mesure(s)<br>"
+                "Population : %{customdata[0]:,.0f} hab."
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        ))
+        fig.add_trace(go.Scattermap(          # disque intérieur = évidement
+            lat=nq_df["lat"].tolist(),
+            lon=nq_df["lon"].tolist(),
+            mode="markers",
+            marker=dict(size=[max(s - 7, 3) for s in ring_sizes],
+                        color="#ffffff", opacity=1.0),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
+        nq_label_lats = [
+            lat - _label_lat_offset_deg(size / 2.0, lat, auto_zoom)
+            for lat, size in zip(nq_df["lat"], nq_df["marker_size"])
+        ]
+        fig.add_trace(go.Scattermap(
+            lat=nq_label_lats,
+            lon=nq_df["lon"].tolist(),
+            mode="markers+text",
+            marker=dict(size=1, opacity=0),
+            text=[f"{v} (n.q.)" for v in nq_df["ville"]],
+            textposition="bottom center",
+            textfont=dict(size=12, color="#6c757d", weight="bold"),
+            hoverinfo="skip",
+            showlegend=False,
+        ))
 
     # Labels — posés SOUS chaque bulle, à une distance proportionnelle à son
     # rayon (décalage de latitude calculé au zoom courant). Le marqueur-ancre
@@ -1665,13 +1975,13 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     label_lats = [
         lat - _label_lat_offset_deg(size / 2.0, lat, auto_zoom)
         for lat, size in zip(city_df["lat"], city_df["marker_size"])
-    ]
+    ] if has_values else []
     fig.add_trace(go.Scattermap(
         lat=label_lats,
-        lon=city_df["lon"].tolist(),
+        lon=city_df["lon"].tolist() if has_values else [],
         mode="markers",
         marker=dict(size=1, opacity=0),
-        text=city_df["ville"].tolist(),
+        text=city_df["ville"].tolist() if has_values else [],
         textposition="bottom center",
         textfont=dict(size=12, color="#1a1a1a", weight="bold"),
         hoverinfo="skip",
@@ -1685,13 +1995,13 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
     label_lats = [
         lat - _label_lat_offset_deg(size / 2.0, lat, auto_zoom)
         for lat, size in zip(city_df["lat"], city_df["marker_size"])
-    ]
+    ] if has_values else []
     fig.add_trace(go.Scattermap(
         lat=label_lats,
-        lon=city_df["lon"].tolist(),
+        lon=city_df["lon"].tolist() if has_values else [],
         mode="markers+text",
         marker=dict(size=1, opacity=0),
-        text=city_df["ville"].tolist(),
+        text=city_df["ville"].tolist() if has_values else [],
         textposition="bottom center",
         textfont=dict(size=12, color="#1a1a1a", weight="bold"),
         hoverinfo="skip",
@@ -1728,6 +2038,13 @@ def render_city_bubble_map_concentration(df_sub: pd.DataFrame,
         </div>
         """
     st.markdown(legend_html, unsafe_allow_html=True)
+
+    # La note de censure vient APRÈS la légende : intercalée entre le graphe et
+    # le bloc .map-pop-legend, elle décalait la référence du positionnement
+    # absolu et la légende sortait de la carte.
+    render_censored_note(df_sub)
+
+
 # ----------------------
 # CHART FUNCTIONS
 # ----------------------
@@ -2089,7 +2406,8 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
     # conc_raw_ng_l  = moyenne des 3 réplicats (déjà calculée dans process_wbe_data)
     # conc_final_ng_l = idem, mais valeurs <LOD/<LOQ remplacées par une valeur de substitution
     calc_cols = ["conc_raw_ng_l", "flag_status", "conc_final_ng_l",
-                 "vol_jour", "pop", "y", "is_outlier"]
+                 "vol_jour", "pop", "y", "is_outlier",
+                 "n_measures", "n_lod", "n_loq"]
     for c in calc_cols:
         if c in df_view.columns:
             display_cols.append(c)
@@ -2124,6 +2442,9 @@ def render_detailed_data_table(df_view: pd.DataFrame, key_prefix: str = ""):
         "charge_calc": "Charge calc (mg/j/1000)",
         "y": "Y (stats)",
         "flag_status": "Flag",
+        "n_measures": "Mesures du trimestre",
+        "n_lod": "dont <LOD",
+        "n_loq": "dont <LOQ",
         "is_outlier": "Outlier?",
         "vol_jour": "Vol. jour (m³)",
         "pop": "Population",
@@ -2169,25 +2490,35 @@ def render_chart_footnote_table(df_view: pd.DataFrame, key_prefix: str = ""):
     for analyte in analytes:
         df_a = df_view[df_view["composes"] == analyte]
         n_outliers = int(df_a["is_outlier"].sum()) if "is_outlier" in df_a.columns else 0
-        df_a_used = df_a.dropna(subset=["y"])
-        n_used = len(df_a_used)
 
-        if n_used == 0:
-            n_lod, n_loq = 0, 0
-            pct_lod, pct_loq = "—", "—"
+        # Trimestres effectivement tracés (y non-NaN) vs masqués parce que
+        # TOUTES les mesures du trimestre étaient <LOD/<LOQ.
+        n_shown = int(df_a["y"].notna().sum())
+        if "n_censored" in df_a.columns:
+            cens = pd.to_numeric(df_a["n_censored"], errors="coerce").fillna(0)
+            n_masked = int((df_a["y"].isna() & (cens > 0)).sum())
         else:
-            if "flag_status" in df_a_used.columns:
-                n_lod = int((df_a_used["flag_status"] == "LOD").sum())
-                n_loq = int((df_a_used["flag_status"] == "LOQ").sum())
-            else:
-                n_lod, n_loq = 0, 0
-            pct_lod = f"{n_lod / n_used * 100:.1f}%"
-            pct_loq = f"{n_loq / n_used * 100:.1f}%"
+            n_masked = 0
+
+        # Comptages de MESURES brutes censurées, agrégés sur les trimestres.
+        if "n_lod" in df_a.columns:
+            n_lod = int(pd.to_numeric(df_a["n_lod"], errors="coerce").fillna(0).sum())
+            n_loq = int(pd.to_numeric(df_a["n_loq"], errors="coerce").fillna(0).sum())
+            n_meas = int(pd.to_numeric(df_a["n_measures"], errors="coerce").fillna(0).sum())
+        else:
+            n_lod = n_loq = n_meas = 0
+
+        if n_meas == 0:
+            pct_lod = pct_loq = "—"
+        else:
+            pct_lod = f"{n_lod / n_meas * 100:.1f}%"
+            pct_loq = f"{n_loq / n_meas * 100:.1f}%"
 
         rows_html.append(f"""
         <tr style="border-bottom: 1px solid #f0f0f0;">
             <td style="padding: 0.4rem 0.6rem;"><strong>{analyte}</strong></td>
-            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_used}</td>
+            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_shown}</td>
+            <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_masked}</td>
             <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_lod} ({pct_lod})</td>
             <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_loq} ({pct_loq})</td>
             <td style="padding: 0.4rem 0.6rem; text-align: center;">{n_outliers}</td>
@@ -2204,9 +2535,10 @@ def render_chart_footnote_table(df_view: pd.DataFrame, key_prefix: str = ""):
             <thead>
                 <tr style="background: white; border-bottom: 2px solid #dee2e6;">
                     <th style="text-align: left; padding: 0.4rem 0.6rem;">Analyte</th>
-                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Points utilisés</th>
-                    <th style="text-align: center; padding: 0.4rem 0.6rem;">&lt;LOD</th>
-                    <th style="text-align: center; padding: 0.4rem 0.6rem;">&lt;LOQ</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Trimestres tracés</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Trimestres masqués<br><span style="font-weight:400; font-size:0.85em;">(tout &lt;LOD/&lt;LOQ)</span></th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Mesures &lt;LOD</th>
+                    <th style="text-align: center; padding: 0.4rem 0.6rem;">Mesures &lt;LOQ</th>
                     <th style="text-align: center; padding: 0.4rem 0.6rem;">Outliers exclus</th>
                 </tr>
             </thead>
@@ -2312,6 +2644,7 @@ def render_timeseries_chart(df_view, show_trend, normalize, df_mkt, start_d, end
     _strip_marker_suffix_in_legend(fig1)
     st.plotly_chart(fig1, width='stretch', key=f"{key_prefix}chart_raw")
     st.markdown(f'<div class="chart-footnote">{figure_footnote(df_view, "y")}</div>', unsafe_allow_html=True)
+    render_censored_note(df_view)
 
     if normalize:
         df_norm = df_view.copy()
@@ -2517,80 +2850,86 @@ def render_timeseries_combined(df_primary, df_mkt, start_d, end_d,
             ),
         ))
 
-        # Trace 3 : tendance de Sen sur la charge normalisée
-        seg = _sen_trend_segment(df_raw, "y")
+    # Trace 3 : tendance de Sen sur la charge normalisée
+    # (indépendante de la pureté : toujours calculée sur df_raw)
+    seg = _sen_trend_segment(df_raw, "y")
+    if seg is not None:
+        xs, ys, direction, slope_str = seg
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines",
+            name=f"{prefix}Charge normalisée — tendance {direction}",
+            legendgroup="charge", legendrank=4,
+            line=dict(color=COLOR_CHARGE, width=2.5, dash="dash"),
+            hovertemplate=f"Tendance (Sen) : {slope_str}<extra></extra>",
+        ))
+
+    # Trace 4 : tendance de Sen sur la charge normalisée par la pureté
+    if not df_norm_plot.empty:
+        seg = _sen_trend_segment(df_norm_plot, "y_norm")
         if seg is not None:
             xs, ys, direction, slope_str = seg
             fig.add_trace(go.Scatter(
                 x=xs, y=ys, mode="lines",
-                name=f"{prefix}Charge normalisée — tendance {direction}",
-                legendgroup="charge", legendrank=4,
-                line=dict(color=COLOR_CHARGE, width=2.5, dash="dash"),
+                name=f"{prefix}Charge normalisée par la pureté — tendance {direction}",
+                legendgroup="charge_pur", legendrank=2,
+                line=dict(color=COLOR_PURITY, width=2.5, dash="dash"),
                 hovertemplate=f"Tendance (Sen) : {slope_str}<extra></extra>",
             ))
 
-        # Trace 4 : tendance de Sen sur la charge normalisée par la pureté
-        if not df_norm_plot.empty:
-            seg = _sen_trend_segment(df_norm_plot, "y_norm")
-            if seg is not None:
-                xs, ys, direction, slope_str = seg
-                fig.add_trace(go.Scatter(
-                    x=xs, y=ys, mode="lines",
-                    name=f"{prefix}Charge normalisée par la pureté — tendance {direction}",
-                    legendgroup="charge_pur", legendrank=2,
-                    line=dict(color=COLOR_PURITY, width=2.5, dash="dash"),
-                    hovertemplate=f"Tendance (Sen) : {slope_str}<extra></extra>",
-                ))
+    # --- Mise en forme et affichage du graphe principal ---
+    # NB : cette partie doit rester en dehors du bloc "if not df_norm_plot.empty"
+    # sinon aucun graphe n'est affiché quand aucune pureté n'est disponible
+    # pour les trimestres mesurés.
+    _adapt_xaxis(fig, df_raw["date"])
+    fig.update_layout(
+        plot_bgcolor="white", paper_bgcolor="white",
+        xaxis=dict(gridcolor="#f0f0f0", title="Date"),
+        yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero",
+                   title="Charge (mg/j/1000 hab.)"),
+        hovermode="closest",
+        height=550,
+    )
+    style_legend(fig)
+    st.plotly_chart(fig, width='stretch', key=f"{key_prefix}chart_combined")
+    st.markdown(
+        f'<div class="chart-footnote">{figure_footnote(df_raw, "y")}</div>',
+        unsafe_allow_html=True,
+    )
+    render_censored_note(df_primary)
 
-        _adapt_xaxis(fig, df_raw["date"])
-        fig.update_layout(
-            plot_bgcolor="white", paper_bgcolor="white",
-            xaxis=dict(gridcolor="#f0f0f0", title="Date"),
-            yaxis=dict(gridcolor="#f0f0f0", rangemode="tozero",
-                       title="Charge (mg/j/1000 hab.)"),
-            hovermode="closest",
-            height=550,
-        )
-        style_legend(fig)
-        st.plotly_chart(fig, width='stretch', key=f"{key_prefix}chart_combined")
-        st.markdown(
-            f'<div class="chart-footnote">{figure_footnote(df_raw, "y")}</div>',
-            unsafe_allow_html=True,
+    if pur_q.empty or df_norm_plot.empty:
+        st.warning(
+            "⚠️ Pas de pureté disponible pour ces trimestres : seule la charge "
+            "normalisée (débit + population) est affichée."
         )
 
-        if pur_q.empty or df_norm_plot.empty:
-            st.warning(
-                "⚠️ Pas de pureté disponible pour ces trimestres : seule la charge "
-                "normalisée (débit + population) est affichée."
+    # --- Graphe de pureté trimestrielle utilisée (en dessous) ---
+    if not pur_q.empty:
+        st.markdown("**📉 Pureté trimestrielle utilisée**")
+        pur_q_plot = pur_q.sort_values("quarter").copy()
+        pur_q_plot["date_mid"] = pur_q_plot["quarter"].dt.to_timestamp(how="end") - pd.offsets.Day(45)
+
+        fig3 = px.line(pur_q_plot, x="date_mid", y="pur_median_q", markers=True)
+        fig3.update_traces(line_color="#e63946", line_width=2, marker_size=8)
+        fig3.update_yaxes(range=[0, 100], title="Pureté médiane (%)")
+        fig3.update_xaxes(title="")
+        fig3.update_layout(
+            plot_bgcolor="white", height=300,
+            margin=dict(l=20, r=20, t=20, b=40)
+        )
+        st.plotly_chart(fig3, width='stretch', key=f"{key_prefix}chart_purity")
+
+        if stup_name in {"MDMA", "THC"}:
+            st.caption(
+                f"ℹ️ La pureté trimestrielle pour {stup_name} est une moyenne pondérée "
+                "des différentes formes disponibles sur le marché."
             )
 
-        # --- Graphe de pureté trimestrielle utilisée (en dessous) ---
-        if not pur_q.empty:
-            st.markdown("**📉 Pureté trimestrielle utilisée**")
-            pur_q_plot = pur_q.sort_values("quarter").copy()
-            pur_q_plot["date_mid"] = pur_q_plot["quarter"].dt.to_timestamp(how="end") - pd.offsets.Day(45)
-
-            fig3 = px.line(pur_q_plot, x="date_mid", y="pur_median_q", markers=True)
-            fig3.update_traces(line_color="#e63946", line_width=2, marker_size=8)
-            fig3.update_yaxes(range=[0, 100], title="Pureté médiane (%)")
-            fig3.update_xaxes(title="")
-            fig3.update_layout(
-                plot_bgcolor="white", height=300,
-                margin=dict(l=20, r=20, t=20, b=40)
-            )
-            st.plotly_chart(fig3, width='stretch', key=f"{key_prefix}chart_purity")
-
-            if stup_name in {"MDMA", "THC"}:
-                st.caption(
-                    f"ℹ️ La pureté trimestrielle pour {stup_name} est une moyenne pondérée "
-                    "des différentes formes disponibles sur le marché."
-                )
-
-        # --- Données détaillées ---
-        with st.expander("📋 Données détaillées (avec normalisation)"):
-            render_chart_footnote_table(df_norm, key_prefix=f"{key_prefix}comb_")
-            st.markdown("---")
-            render_detailed_data_table(df_norm, key_prefix=f"{key_prefix}comb_")
+    # --- Données détaillées ---
+    with st.expander("📋 Données détaillées (avec normalisation)"):
+        render_chart_footnote_table(df_norm, key_prefix=f"{key_prefix}comb_")
+        st.markdown("---")
+        render_detailed_data_table(df_norm, key_prefix=f"{key_prefix}comb_")
 
 def render_map_city_table(df_analyte: pd.DataFrame):
     """
@@ -2599,14 +2938,27 @@ def render_map_city_table(df_analyte: pd.DataFrame):
     couleur = charge médiane, taille = population.
     """
     city_df = build_city_bubble_df(df_analyte, value_col="y")
-    if city_df.empty:
+    nq_df = build_nq_city_df(df_analyte, value_col="y")
+    if city_df.empty and nq_df.empty:
         st.info("Aucune donnée à afficher.")
         return
 
-    tbl = city_df[["ville", "pop_median", "value_median"]].copy()
-    tbl = tbl.sort_values("value_median", ascending=False)
+    if not city_df.empty:
+        tbl = city_df[["ville", "pop_median", "value_median"]].copy()
+        tbl = tbl.sort_values("value_median", ascending=False)
+        tbl["value_median"] = pd.to_numeric(
+            tbl["value_median"], errors="coerce").round(1).astype(str)
+    else:
+        tbl = pd.DataFrame(columns=["ville", "pop_median", "value_median"])
+
+    # Villes sans charge quantifiable : listées en fin de tableau avec « n.q. »
+    # plutôt qu'omises silencieusement.
+    if not nq_df.empty:
+        tbl_nq = nq_df[["ville", "pop_median"]].copy().sort_values("ville")
+        tbl_nq["value_median"] = "n.q."
+        tbl = pd.concat([tbl, tbl_nq], ignore_index=True)
+
     tbl["pop_median"] = pd.to_numeric(tbl["pop_median"], errors="coerce").round(0).astype("Int64")
-    tbl["value_median"] = pd.to_numeric(tbl["value_median"], errors="coerce").round(1)
     tbl = tbl.rename(columns={
         "ville": "Ville",
         "pop_median": "Population (hab.)",
@@ -2669,13 +3021,19 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
         return max(ymax, 1.0)
 
     for analyte in analytes:
-        sub = df_view[df_view["composes"] == analyte].copy()
-        sub["y"] = pd.to_numeric(sub["y"], errors="coerce")
-        sub = sub.dropna(subset=["y", "ville"])
-        if sub.empty:
+        # sub_all conserve les villes dont aucune mesure n'est quantifiable :
+        # la carte les affiche en anneau évidé plutôt que de les faire
+        # disparaître. sub ne garde que les villes réellement quantifiées,
+        # pour le calcul des médianes et de l'échelle.
+        sub_all = df_view[df_view["composes"] == analyte].copy()
+        sub_all["y"] = pd.to_numeric(sub_all["y"], errors="coerce")
+        sub_all = sub_all.dropna(subset=["ville"])
+        if sub_all.empty:
             continue
+        sub = sub_all.dropna(subset=["y"])
 
-        medians = sub.groupby("ville")["y"].median().sort_values(ascending=False)
+        medians = (sub.groupby("ville")["y"].median().sort_values(ascending=False)
+                   if not sub.empty else pd.Series(dtype=float))
         ville_order = list(medians.index)
         y_max_zoom = _compute_zoom_ymax(sub)
 
@@ -2686,7 +3044,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
         with col_map:
             st.markdown("**🗺️ Carte — couleur = concentration médiane**")
             render_city_bubble_map_concentration(
-                sub,
+                sub_all,
                 value_col="y",
                 title="",
                 units="mg/j/1000 hab.",
@@ -2699,7 +3057,7 @@ def render_comparison_with_map(df_view, stup_name, key_prefix="", highlight_city
 
         # (MODIF) Données détaillées de la carte : 1 ligne par ville
         with st.expander(f"📋 Données détaillées — {analyte}", expanded=False):
-            render_map_city_table(sub)
+            render_map_city_table(sub_all)
 
         # with col_box:
         #     st.markdown("**📊 Boxplots — couleur = charge (médiane par ville)**")
@@ -2839,19 +3197,38 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_
         return max(ymax, 1.0)
 
     for analyte in analytes:
-        sub = df_view[df_view["composes"] == analyte].copy()
+        sub_all = df_view[df_view["composes"] == analyte].copy()
+        sub = sub_all.copy()
         sub["y"] = pd.to_numeric(sub["y"], errors="coerce")
         sub = sub.dropna(subset=["y", "ville"])
-        if sub.empty:
+
+        # Villes présentes dans les données de cet analyte, y compris celles
+        # dont AUCUN point n'est traçable (toutes mesures <LOD/<LOQ).
+        villes_all = sorted(sub_all["ville"].dropna().unique())
+        if not villes_all:
             continue
 
-        medians = sub.groupby("ville")["y"].median().sort_values(ascending=False)
-        ville_order = list(medians.index)
+        if sub.empty:
+            medians = pd.Series(dtype=float)
+        else:
+            medians = sub.groupby("ville")["y"].median().sort_values(ascending=False)
+
+        # Trois groupes, de gauche à droite :
+        #   1. villes avec une médiane > 0        -> boxplots classiques
+        #   2. villes avec une médiane nulle      -> boxplot posé sur zéro
+        #   3. villes sans aucune charge traçable -> marqueur « n.q. » à droite
+        # Objectif : ne jamais faire disparaître une ville du graphe, pour ne
+        # pas laisser croire qu'elle a été oubliée.
+        villes_positives = [v for v, m in medians.items() if m > 0]
+        villes_zero = sorted([v for v, m in medians.items() if m <= 0])
+        villes_nq = sorted([v for v in villes_all if v not in set(medians.index)])
+        ville_order = villes_positives + villes_zero + villes_nq
+
         y_max_zoom = _compute_zoom_ymax(sub)
 
         fig = go.Figure()
 
-        for ville in ville_order:
+        for ville in villes_positives + villes_zero:
             sub_ville = sub[sub["ville"] == ville]
             ville_color = CITY_COLOR_MAP.get(ville, COLOR_SEQ[0])
 
@@ -2904,6 +3281,35 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_
                 showlegend=False
             ))
 
+        # Villes sans aucune charge traçable : marqueur explicite posé sur zéro,
+        # à l'extrémité droite. Une seule entrée de légende pour tout le groupe.
+        for i_nq, ville in enumerate(villes_nq):
+            sub_ville = sub_all[sub_all["ville"] == ville]
+            n_meas = int(pd.to_numeric(sub_ville.get("n_measures", 0),
+                                       errors="coerce").fillna(0).sum())
+            n_lod = int(pd.to_numeric(sub_ville.get("n_lod", 0),
+                                      errors="coerce").fillna(0).sum())
+            n_loq = int(pd.to_numeric(sub_ville.get("n_loq", 0),
+                                      errors="coerce").fillna(0).sum())
+            detail = (f"{n_lod} &lt;LOD, {n_loq} &lt;LOQ sur {n_meas} mesure(s)"
+                      if n_meas else "aucune mesure exploitable")
+            fig.add_trace(go.Scatter(
+                x=[ville], y=[0],
+                mode="markers+text",
+                text=["n.q."], textposition="top center",
+                textfont=dict(size=11, color="#6c757d"),
+                name="Aucune charge quantifiable (&lt;LOD / &lt;LOQ)",
+                legendgroup="nq",
+                showlegend=(i_nq == 0),
+                marker=dict(color="#adb5bd", size=13, symbol="x-thin",
+                            line=dict(color="#6c757d", width=2)),
+                hovertemplate=(
+                    f"<b>{ville}</b><br>"
+                    "Aucune charge quantifiable<br>"
+                    f"{detail}<extra></extra>"
+                ),
+            ))
+
         fig.update_layout(
             xaxis_title="Ville",
             yaxis_title="Charge (mg/jour/1000 habitants)",
@@ -2911,10 +3317,25 @@ def render_comparison_boxplot_only(df_view, stup_name, key_prefix="", highlight_
             height=650,
             plot_bgcolor="white",
             margin=dict(l=60, r=30, t=60, b=80),
+            showlegend=bool(villes_nq),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                        xanchor="right", x=1),
         )
-        fig.update_yaxes(range=[0, y_max_zoom], gridcolor="#f0f0f0", zerolinecolor="#e0e0e0")
+
+        # Séparateur visuel entre les villes quantifiées et le groupe « n.q. ».
+        n_left = len(villes_positives) + len(villes_zero)
+        if villes_nq and n_left > 0:
+            fig.add_vline(x=n_left - 0.5, line_width=1,
+                          line_dash="dot", line_color="#adb5bd")
+
+        # Marge basse pour que les marqueurs posés sur zéro restent lisibles.
+        y_min = -0.04 * y_max_zoom if villes_nq else 0
+        fig.update_yaxes(range=[y_min, y_max_zoom], gridcolor="#f0f0f0",
+                         zerolinecolor="#e0e0e0")
 
         st.plotly_chart(fig, width='stretch', key=f"{key_prefix}boxplot_{analyte}")
+
+    render_censored_note(df_view)
 
     with st.expander("📋 Données détaillées"):
         render_detailed_data_table(df_view, key_prefix=key_prefix)
@@ -2940,33 +3361,75 @@ with st.sidebar:
     # Récupération du rôle de l'utilisateur connecté
     is_admin = st.session_state.get("is_admin", False)
 
-    if is_admin:
-        # Admin : filtre projets visible et interactif
-        with st.expander("📁 **Projets**", expanded=True):
-            if "projet" in df_wbe.columns:
-                all_projects = sorted(
-                    [p for p in df_wbe["projet"].dropna().astype(str).unique() if p.upper() != "SCORE"])
-                selected_projects = []
-                for p in all_projects:
-                    k = f"proj_{p}"
-                    if k not in st.session_state:
-                        st.session_state[k] = True
-                    if st.checkbox(p, key=k):
-                        selected_projects.append(p)
-                if not selected_projects:
-                    st.warning("Sélectionnez au moins un projet")
-                    st.stop()
-            else:
-                selected_projects = []
+    # Projet en cours (affiché par défaut) et projet clos (optionnel).
+    # La comparaison se fait sur la forme normalisée (_norm) pour ne pas
+    # dépendre de la casse ni des accents du libellé présent dans le fichier.
+    PROJECT_MAIN_KEY = "chamaleaux"
+    PROJECT_OPTIONAL_KEY = "dromedario"
+
+    if "projet" in df_wbe.columns:
+        all_projects = sorted(
+            p for p in df_wbe["projet"].dropna().astype(str).unique()
+            if p.upper() != "SCORE"
+        )
     else:
-        # Utilisateur STEP : projets restreints à ChaMalEaux + DroMedARio, filtre caché
-        selected_projects = ["ChaMalEaux", "DroMedARio"]
+        all_projects = []
+
+    labels_main = [p for p in all_projects if _norm(p) == PROJECT_MAIN_KEY]
+    labels_opt = [p for p in all_projects if _norm(p) == PROJECT_OPTIONAL_KEY]
+    labels_other = [p for p in all_projects
+                    if p not in labels_main and p not in labels_opt]
+
+    with st.expander("📁 **Projets**", expanded=True):
+        if not all_projects:
+            selected_projects = []
+        elif not labels_main:
+            # Le projet principal est introuvable : plutôt que de vider le
+            # dashboard en silence, on le signale et on affiche tout.
+            st.warning(
+                "Projet « ChaMalEaux » introuvable dans la colonne 'projet' : "
+                "tous les projets sont affichés."
+            )
+            selected_projects = list(all_projects)
+        else:
+            main_label = labels_main[0]
+            selected_projects = []
+
+            if is_admin:
+                # L'admin garde la main sur le projet principal.
+                if st.checkbox(f"{main_label} (projet en cours)",
+                               key="proj_main", value=True):
+                    selected_projects.append(main_label)
+            else:
+                st.caption(f"Projet en cours : **{main_label}**")
+                selected_projects.append(main_label)
+
+            if labels_opt:
+                if st.checkbox(f"Inclure aussi {labels_opt[0]} (projet clos)",
+                               key="proj_optional", value=False):
+                    selected_projects.append(labels_opt[0])
+
+            if is_admin:
+                for p in labels_other:
+                    if st.checkbox(p, key=f"proj_{p}", value=False):
+                        selected_projects.append(p)
+
+            if not selected_projects:
+                st.warning("Sélectionnez au moins un projet")
+                st.stop()
 
     st.markdown("### 📅 Période")
 
-    # Liste de tous les trimestres présents dans les données.
+    # Trimestres disponibles POUR LES PROJETS SÉLECTIONNÉS (et non pour
+    # l'ensemble du fichier). Conséquence voulue : avec ChaMalEaux seul, la
+    # plage démarre à son premier trimestre (T1 2025) sans qu'aucune date ne
+    # soit codée en dur — si le projet s'étend, la plage suit.
+    df_scope = df_wbe
+    if selected_projects and "projet" in df_wbe.columns:
+        df_scope = df_wbe[df_wbe["projet"].astype(str).isin(selected_projects)]
+
     all_quarters_sorted = sorted(
-        pd.to_datetime(df_wbe["date"]).dt.to_period("Q").dropna().unique()
+        pd.to_datetime(df_scope["date"]).dt.to_period("Q").dropna().unique()
     )
 
     # Filtrage des trimestres autorisés selon le rôle :
@@ -2986,16 +3449,10 @@ with st.sidebar:
 
     quarter_labels = [f"T{q.quarter} {q.year}" for q in allowed_quarters]
 
-    # Trimestre par défaut pour la poignée gauche : T1 2025 (début du projet
-    # ChaMalEaux). Fallback : premier trimestre disponible >= T1 2025, sinon
-    # le tout dernier disponible (cas où le dataset s'arrêterait avant 2025).
-    default_start_period = pd.Period(year=2021, quarter=1, freq="Q")
-    candidates_after_default = [q for q in allowed_quarters if q >= default_start_period]
-    if candidates_after_default:
-        first = candidates_after_default[0]
-        default_start_label = f"T{first.quarter} {first.year}"
-    else:
-        default_start_label = quarter_labels[-1]
+    # Poignée gauche par défaut : premier trimestre du périmètre courant.
+    # (Avant, une constante T1 2021 était comparée alors que le commentaire
+    # annonçait T1 2025 — l'incohérence disparaît en dérivant la valeur.)
+    default_start_label = quarter_labels[0]
 
     # Slider à 2 poignées : début + fin de la plage
     selected_range = st.select_slider(
@@ -3019,11 +3476,12 @@ with st.sidebar:
     end_d = end_period.end_time.date()
 
     # Note informative sur les périodes des projets
+    scope_txt = " + ".join(selected_projects) if selected_projects else "—"
     st.markdown(
         '<div style="font-size: 0.9rem; color: #555; margin-top: 0.75rem; line-height: 1.6;">'
-        'ℹ️ <strong>DroMedARio</strong> : T1 2021 — T4 2024<br>'
-        '<span style="margin-left: 1.4rem;"></span>'
-        '<strong>ChaMalEaux</strong> : T1 2025 — aujourd\'hui'
+        f'ℹ️ Périmètre affiché : <strong>{scope_txt}</strong><br>'
+        f'<span style="margin-left: 1.4rem;"></span>'
+        f'Trimestres disponibles : {quarter_labels[0]} — {quarter_labels[-1]}'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -3076,6 +3534,65 @@ def get_available_stups(df):
         if any(a in available_composes for a in analytes):
             available_stups.append(stup)
     return sorted(available_stups)
+
+
+# ----------------------
+# SÉLECTION PARTAGÉE DU STUPÉFIANT (Ma STEP <-> Comparaison)
+# ----------------------
+# Les deux onglets affichent chacun leur propre selectbox : Streamlit interdit
+# de réutiliser la même clé de widget deux fois. On maintient donc une clé de
+# session commune (SHARED_STUP_KEY) qui porte la préférence de l'utilisateur,
+# et chaque selectbox est synchronisé dessus :
+#   - avant l'affichage : on force la valeur du widget sur la préférence
+#     partagée, si ce stupéfiant fait partie des options disponibles ;
+#   - à chaque changement : le callback écrit la nouvelle valeur dans la clé
+#     partagée. Le callback s'exécute AVANT le rerun du script, donc les deux
+#     onglets voient immédiatement le nouveau choix.
+# Si la préférence n'existe pas dans les options d'un onglet (p. ex. stupéfiant
+# absent des villes comparées), cet onglet retombe sur sa propre valeur sans
+# écraser la préférence partagée.
+SHARED_STUP_KEY = "shared_selected_stup"
+
+
+def _sync_shared_stup(widget_key: str):
+    """Callback on_change : propage le choix du widget vers la clé partagée."""
+    st.session_state[SHARED_STUP_KEY] = st.session_state[widget_key]
+
+
+def render_stup_selectbox(options, widget_key: str):
+    """
+    Affiche le selectbox « stupéfiant » synchronisé entre les onglets.
+    Retourne le stupéfiant sélectionné, ou None si aucune option.
+    """
+    opts = sorted(options)
+    if not opts:
+        return None
+
+    shared = st.session_state.get(SHARED_STUP_KEY)
+
+    if shared in opts:
+        # La préférence partagée est disponible ici : on l'impose au widget.
+        st.session_state[widget_key] = shared
+    elif st.session_state.get(widget_key) not in opts:
+        # Préférence indisponible ET valeur locale obsolète : on repart du
+        # premier choix valide.
+        st.session_state[widget_key] = opts[0]
+
+    value = st.selectbox(
+        label="Stupéfiant",
+        options=opts,
+        key=widget_key,
+        on_change=_sync_shared_stup,
+        args=(widget_key,),
+        label_visibility="collapsed",
+    )
+
+    if shared is None:
+        # Premier rendu de la session : on initialise la préférence partagée.
+        st.session_state[SHARED_STUP_KEY] = value
+
+    return value
+
 
 
 # ----------------------
@@ -3242,11 +3759,8 @@ with tabs[1]:
                     </div>
                     """, unsafe_allow_html=True)
 
-                selected_stup = st.selectbox(
-                    label="Stupéfiant",
-                    options=sorted(available_stups),
-                    key="comparison_selected_stup",
-                    label_visibility="collapsed",
+                selected_stup = render_stup_selectbox(
+                    available_stups, "comparison_selected_stup"
                 )
 
             with col_mode:
@@ -3275,6 +3789,12 @@ with tabs[1]:
                 )
 
             st.markdown("---")
+
+        # Garde-fou : comparison_mode n'est défini que si des stupéfiants
+        # sont disponibles pour les villes sélectionnées.
+        comparison_mode = st.session_state.get(
+            "comparison_mode_v2", "📈 Tendances temporelles"
+        ) if not available_stups else comparison_mode
 
         if "Carte" in comparison_mode:
             # Mode Carte : on utilise le selected_stup global (bandeau du haut)
@@ -3310,13 +3830,7 @@ with tabs[1]:
                     n_used = len(df_primary_used)
 
                     if n_used == 0:
-                        st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
-                    elif "flag_status" in df_primary_used.columns and \
-                            (df_primary_used["flag_status"] == "LOD").sum() == n_used:
-                        st.info(
-                            f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
-                            f"sont en dessous de la limite de détection."
-                        )
+                        render_no_series_message(df_primary, primary_name)
                     else:
                         liaison = de_d_apostrophe(primary_name)
                         periode = period_label_fr(df_primary)
@@ -3361,13 +3875,7 @@ with tabs[1]:
                     n_used = len(df_primary_used)
 
                     if n_used == 0:
-                        st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
-                    elif "flag_status" in df_primary_used.columns and \
-                            (df_primary_used["flag_status"] == "LOD").sum() == n_used:
-                        st.info(
-                            f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
-                            f"sont en dessous de la limite de détection."
-                        )
+                        render_no_series_message(df_primary, primary_name)
                     else:
                         liaison = de_d_apostrophe(primary_name)
                         periode = period_label_fr(df_primary)
@@ -3399,99 +3907,90 @@ with tabs[1]:
 # ----------------------
 # TABS: Ma STEP
 # ----------------------
-    with tabs[0]:
-        city = selected_step
-        df_city = df_base[df_base["ville"] == city].copy()
+with tabs[0]:
+    city = selected_step
+    df_city = df_base[df_base["ville"] == city].copy()
 
-        if df_city.empty:
-            st.warning(f"Aucune donnée pour **{city}**.")
+    if df_city.empty:
+        st.warning(f"Aucune donnée pour **{city}**.")
+    else:
+
+        available_stups = get_available_stups(df_city)
+
+        if not available_stups:
+            st.info("Aucun stupéfiant détecté pour cette ville.")
         else:
+            # Bandeau visuel autour du selectbox stupéfiant
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
+                        border: 2px solid #0f4c81;
+                        border-radius: 10px;
+                        padding: 0.85rem 1.25rem;
+                        margin: 1rem 0 0.25rem 0;
+                        font-size: 1.2rem;
+                        font-weight: 600;
+                        color: #0f4c81;">
+                🧪 Quel stupéfiant voulez-vous visualiser ?
+            </div>
+            """, unsafe_allow_html=True)
 
-            available_stups = get_available_stups(df_city)
+            selected_stup = render_stup_selectbox(
+                available_stups, f"mastep_{city}_selected_stup"
+            )
 
-            if not available_stups:
-                st.info("Aucun stupéfiant détecté pour cette ville.")
+            wanted_analytes = RELATED_ANALYTES.get(selected_stup, [])
+            df_stup = df_city[df_city["composes"].isin(wanted_analytes)].copy()
+
+            if df_stup.empty:
+                st.info(f"Aucune donnée disponible pour {selected_stup}.")
             else:
-                # Bandeau visuel autour du selectbox stupéfiant
-                st.markdown("""
-                <div style="background: linear-gradient(135deg, #e8eef4 0%, #d6e0ec 100%);
-                            border: 2px solid #0f4c81;
-                            border-radius: 10px;
-                            padding: 0.85rem 1.25rem;
-                            margin: 1rem 0 0.25rem 0;
-                            font-size: 1.2rem;
-                            font-weight: 600;
-                            color: #0f4c81;">
-                    🧪 Quel stupéfiant voulez-vous visualiser ?
-                </div>
-                """, unsafe_allow_html=True)
+                n_points = len(df_stup.dropna(subset=["y"]))
 
-                selected_stup = st.selectbox(
-                    label="Stupéfiant",
-                    options=sorted(available_stups),
-                    key=f"mastep_{city}_selected_stup",
-                    label_visibility="collapsed",
-                )
+                # Identifier le marqueur principal — seul analyte affiché
+                primary = get_primary_marker(selected_stup)
+                available = sorted(df_stup["composes"].dropna().unique())
 
-                wanted_analytes = RELATED_ANALYTES.get(selected_stup, [])
-                df_stup = df_city[df_city["composes"].isin(wanted_analytes)].copy()
-
-                if df_stup.empty:
-                    st.info(f"Aucune donnée disponible pour {selected_stup}.")
+                if not primary:
+                    render_stup_panel_header(selected_stup, n_points)
+                    st.info(f"ℹ️ Aucun marqueur principal défini pour {selected_stup}.")
+                elif primary not in available:
+                    render_stup_panel_header(selected_stup, n_points)
+                    st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
                 else:
-                    n_points = len(df_stup.dropna(subset=["y"]))
+                    primary_name = analyte_full_name_only(primary)
+                    st.markdown(f"### 🎯 Marqueur -  {primary_name}")
 
-                    # Identifier le marqueur principal — seul analyte affiché
-                    primary = get_primary_marker(selected_stup)
-                    available = sorted(df_stup["composes"].dropna().unique())
+                    df_primary = df_stup[df_stup["composes"] == primary].copy()
+                    df_primary = aggregate_by_quarter(df_primary)
+                    df_primary_used = df_primary.dropna(subset=["y"])
+                    n_used = len(df_primary_used)
 
-                    if not primary:
-                        render_stup_panel_header(selected_stup, n_points)
-                        st.info(f"ℹ️ Aucun marqueur principal défini pour {selected_stup}.")
-                    elif primary not in available:
-                        render_stup_panel_header(selected_stup, n_points)
-                        st.info(f"ℹ️ Pas de données disponibles pour le marqueur principal de {selected_stup}.")
+                    if n_used == 0:
+                        render_no_series_message(df_primary, primary_name)
                     else:
-                        primary_name = analyte_full_name_only(primary)
-                        st.markdown(f"### 🎯 Marqueur -  {primary_name}")
-
-                        df_primary = df_stup[df_stup["composes"] == primary].copy()
-                        df_primary = aggregate_by_quarter(df_primary)
-                        df_primary_used = df_primary.dropna(subset=["y"])
-                        n_used = len(df_primary_used)
-
-                        if n_used == 0:
-                            st.info(f"ℹ️ Aucune mesure disponible pour {primary_name}.")
-                        elif "flag_status" in df_primary_used.columns and \
-                                (df_primary_used["flag_status"] == "LOD").sum() == n_used:
-                            st.info(
-                                f"ℹ️ Toutes les analyses effectuées pour {primary_name} "
-                                f"sont en dessous de la limite de détection."
+                        # Titre du graphique
+                        liaison = de_d_apostrophe(primary_name)
+                        periode = period_label_fr(df_primary)
+                        periode_suffix = f" -- {periode}" if periode else ""
+                        st.markdown(
+                            f"### Évolution dans le temps des charges {liaison}{primary_name} "
+                            f"dans les eaux usées de {city}{periode_suffix}"
+                        )
+                        if selected_stup in COMBINED_NORM_STUPS:
+                            render_timeseries_combined(
+                                df_primary, df_mkt, start_d, end_d,
+                                selected_stup, primary_name, city,
+                                key_prefix=f"{city}_{selected_stup}_{primary}_",
                             )
                         else:
-                            # Titre du graphique
-                            liaison = de_d_apostrophe(primary_name)
-                            periode = period_label_fr(df_primary)
-                            periode_suffix = f" -- {periode}" if periode else ""
-                            st.markdown(
-                                f"### Évolution dans le temps des charges {liaison}{primary_name} "
-                                f"dans les eaux usées de {city}{periode_suffix}"
+                            # Tendance de Sen toujours affichée, sans
+                            # normalisation par pureté (non disponible pour
+                            # ces stupéfiants).
+                            render_timeseries_chart(
+                                df_primary, True, False, df_mkt, start_d, end_d,
+                                selected_stup, key_prefix=f"{city}_{selected_stup}_{primary}_",
+                                is_comparison=False
                             )
-                            if selected_stup in COMBINED_NORM_STUPS:
-                                render_timeseries_combined(
-                                    df_primary, df_mkt, start_d, end_d,
-                                    selected_stup, primary_name, city,
-                                    key_prefix=f"{city}_{selected_stup}_{primary}_",
-                                )
-                            else:
-                                # Tendance de Sen toujours affichée, sans
-                                # normalisation par pureté (non disponible pour
-                                # ces stupéfiants).
-                                render_timeseries_chart(
-                                    df_primary, True, False, df_mkt, start_d, end_d,
-                                    selected_stup, key_prefix=f"{city}_{selected_stup}_{primary}_",
-                                    is_comparison=False
-                                )
 
 # ----------------------
 # FOOTER
@@ -3500,6 +3999,7 @@ st.markdown("---")
 st.markdown(
     f"<div style='text-align: center; color: #888; font-size: 0.8rem;'>"
     f"WBE Dashboard • {_dt.date.today().strftime('%d.%m.%Y')} • "
-    f"<LOD={LOD_REPLACEMENT_VALUE} ng/L, <LOQ={LOQ_REPLACEMENT_VALUE} ng/L</div>",
+    f"Mesures &lt;LOD / &lt;LOQ : aucune charge calculée "
+    f"(substitution à {LOD_REPLACEMENT_VALUE:.0f} ng/L)</div>",
     unsafe_allow_html=True
 )
