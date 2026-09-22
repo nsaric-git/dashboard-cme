@@ -124,13 +124,13 @@ with st.sidebar:
 
 # Définition des pages
 home_page = st.Page(
-    "pages/home.py",
+    "views/home.py",
     title="Accueil",
     icon="🏠",
 )
 
 dashboard_page = st.Page(
-    "pages/dashboard.py",
+    "views/dashboard.py",
     title="Dashboard",
     icon="📊"
 )

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # =========================================================
-# pages/home.py - Page d'accueil
+# views/home.py - Page d'accueil
 # Présentation du projet et limites d'interprétation des données WBE
 # =========================================================
 import streamlit as st
